@@ -22,26 +22,114 @@ type ToolResult struct {
 // Handler handles the execution of a specific tool.
 type Handler func(ctx context.Context, args map[string]interface{}) *ToolResult
 
+// SpawnCallback is a function that can spawn a detached background agent
+type SpawnCallback func(ctx context.Context, task string)
+
 // Registry holds the registered tools and their handlers.
 type Registry struct {
 	workspaceDir string
 	memoryStore  *memory.Store // Optional reference to memory store
 	definitions  []providers.ToolDefinition
 	handlers     map[string]Handler
+	spawnCb      SpawnCallback
 }
 
 // NewRegistry initializes a tool registry configured for the given workspace.
-func NewRegistry(workspaceDir string, mem *memory.Store) *Registry {
+func NewRegistry(workspaceDir string, mem *memory.Store, spawnCb SpawnCallback) *Registry {
 	r := &Registry{
 		workspaceDir: workspaceDir,
 		memoryStore:  mem,
 		definitions:  []providers.ToolDefinition{},
 		handlers:     make(map[string]Handler),
+		spawnCb:      spawnCb,
 	}
 
 	// Register default sandbox tools
 	r.registerCoreTools()
+	
+	// Load dynamic skills
+	r.loadSkills()
+	
 	return r
+}
+
+func (r *Registry) loadSkills() {
+	skillsDir := filepath.Join(r.workspaceDir, "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		fmt.Printf("Error creating skills directory: %v\n", err)
+		return
+	}
+
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		fmt.Printf("Error reading skills directory: %v\n", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		
+		name := entry.Name()
+		// Only load .sh and .py files
+		if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".py") {
+			continue
+		}
+
+		toolName := strings.TrimSuffix(name, filepath.Ext(name))
+		scriptPath := filepath.Join(skillsDir, name)
+
+		// Define the tool
+		def := providers.ToolDefinition{
+			Type: "function",
+		}
+		def.Function.Name = toolName
+		def.Function.Description = fmt.Sprintf("Dynamic skill: executes the %s script. Ensure to pass required arguments.", name)
+		def.Function.Parameters = map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"args": map[string]interface{}{
+					"type":        "string",
+					"description": "Arguments to pass to the script, separated by spaces.",
+				},
+			},
+		}
+
+		// Create handler
+		handler := func(ctx context.Context, args map[string]interface{}) *ToolResult {
+			cmdArgsStr, _ := args["args"].(string)
+			
+			// Simple split by space for args (a more robust parser might handle quotes)
+			var cmdArgs []string
+			if cmdArgsStr != "" {
+				cmdArgs = strings.Fields(cmdArgsStr)
+			}
+
+			var cmd *exec.Cmd
+			if strings.HasSuffix(name, ".sh") {
+				// Run through sh to handle permissions implicitly
+				execArgs := append([]string{scriptPath}, cmdArgs...)
+				cmd = exec.CommandContext(ctx, "sh", execArgs...)
+			} else {
+				execArgs := append([]string{scriptPath}, cmdArgs...)
+				cmd = exec.CommandContext(ctx, "python3", execArgs...)
+			}
+			cmd.Dir = r.workspaceDir
+
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return &ToolResult{ForLLM: fmt.Sprintf("Skill failed: %s\nOutput: %s", err, output)}
+			}
+
+			return &ToolResult{
+				ForLLM:  string(output),
+			}
+		}
+
+		r.RegisterTool(def, handler)
+		fmt.Printf("Registered dynamic skill: %s\n", toolName)
+	}
 }
 
 func (r *Registry) RegisterTool(def providers.ToolDefinition, handler Handler) {
@@ -364,18 +452,37 @@ func (r *Registry) registerCoreTools() {
 			return &ToolResult{ForLLM: "Error: task must be a string"}
 		}
 
-		// The actual spawning logic is handled here by kicking off a background Go routine.
-		// A full implementation would likely pass this request to the NanoCore via an event bus,
-		// but returning a success message immediately acts as fire-and-forget.
-		
-		go func() {
-			// Real implementation would invoke a new, isolated NanoCore instance here.
-			fmt.Printf("Sub-agent spawned for task: %s\n", taskStr)
-		}()
+		if r.spawnCb != nil {
+			go r.spawnCb(context.Background(), taskStr) // use background context to detach 
+		} else {
+			return &ToolResult{ForLLM: "Error: Spawning is not supported in this registry configuration."}
+		}
 
 		return &ToolResult{
 			ForLLM:  "Sub-agent successfully spawned in the background. It will message the user when complete.",
 			ForUser: "Spawned a background agent to handle that task! It will report back shortly.",
+		}
+	})
+
+	// reload_skills
+	r.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "reload_skills",
+			Description: "Reloads dynamic executable skills from the skills/ directory. Use this after writing a new script to make it available as a tool.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
+		r.loadSkills()
+		return &ToolResult{
+			ForLLM: "Dynamic skills reloaded successfully.",
 		}
 	})
 }

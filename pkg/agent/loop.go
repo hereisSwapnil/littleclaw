@@ -33,16 +33,100 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 	nc := &NanoCore{
 		provider:     provider,
 		memoryStore:  memStore,
-		toolRegistry: tools.NewRegistry(workspace, memStore),
 		msgBus:       msgBus,
 		workspace:    workspace,
 		providerType: providerType,
 		modelName:    modelName,
 	}
 
+	// Initialize registry with the spawn callback
+	nc.toolRegistry = tools.NewRegistry(workspace, memStore, func(ctx context.Context, task string) {
+		nc.SpawnAgent(ctx, task)
+	})
+
 	nc.registerMemoryTools()
 
 	return nc, nil
+}
+
+// SpawnAgent runs an isolated background task utilizing tools and memory, without polluting the main conversation.
+func (c *NanoCore) SpawnAgent(ctx context.Context, taskInstruction string) {
+	fmt.Printf("🚀 Spawning background agent for task: %s\n", taskInstruction)
+	
+	sysPrompt := c.buildSystemPrompt()
+	messages := []providers.Message{
+		{Role: "system", Content: sysPrompt + "\n\nYou are a SUB-AGENT spawned in the background to handle a specific task. Do not wait for user input. Execute tools continuously until the task is complete. When finished, use the 'send_telegram_file' tool or a direct message via 'notify_user' if available, otherwise just complete your loop and the system will log it."},
+		{Role: "user", Content: fmt.Sprintf("Execute the following background task:\n\n%s", taskInstruction)},
+	}
+
+	maxIterations := 15
+	iteration := 0
+
+	for iteration < maxIterations {
+		iteration++
+		
+		req := providers.ChatRequest{
+			Model:       c.modelName,
+			Messages:    messages,
+			Tools:       c.toolRegistry.GetDefinitions(),
+			Temperature: 0.7,
+		}
+
+		resp, err := c.provider.Chat(ctx, req)
+		if err != nil {
+			fmt.Printf("⚠ Sub-agent API Error: %v\n", err)
+			return
+		}
+
+		if len(resp.ToolCalls) > 0 {
+			messages = append(messages, providers.Message{
+				Role:      "assistant",
+				Content:   resp.Content,
+				ToolCalls: resp.ToolCalls,
+			})
+
+			for _, tc := range resp.ToolCalls {
+				toolName := tc["function"].(map[string]interface{})["name"].(string)
+				argsStr := tc["function"].(map[string]interface{})["arguments"].(string)
+
+				var args map[string]interface{}
+				_ = json.Unmarshal([]byte(argsStr), &args)
+
+				result := c.toolRegistry.Execute(ctx, toolName, args)
+
+				messages = append(messages, providers.Message{
+					Role:       "tool",
+					Content:    result.ForLLM,
+					ToolCallID: tc["id"].(string),
+				})
+
+				// Sub-agents might produce files or logs we want to capture internal
+				if result.ForUser != "" || len(result.Files) > 0 {
+					historyMsg := fmt.Sprintf("[Sub-Agent Task Update] Tool '%s' executed: %s", toolName, result.ForUser)
+					if len(result.Files) > 0 {
+						historyMsg += fmt.Sprintf(" [Attached files: %s]", strings.Join(result.Files, ", "))
+					}
+					c.memoryStore.AppendInternal("SUB_AGENT", historyMsg)
+				}
+			}
+
+			messages = append(messages, providers.Message{
+				Role:    "user",
+				Content: "[System Context] Tool execution finished. Continue working on the task.",
+			})
+			continue
+		}
+
+		if resp.Content != "" {
+			c.memoryStore.AppendInternal("SUB_AGENT_FINISHED", resp.Content)
+			fmt.Println("✅ Sub-agent finished execution:", resp.Content)
+		}
+		break
+	}
+	
+	if iteration >= maxIterations {
+		fmt.Println("⚠ Sub-agent reached maximum inference iterations without completing.")
+	}
 }
 
 // RunAgentLoop processes an incoming user message through a multi-step reasoning loop.
@@ -170,7 +254,8 @@ func (c *NanoCore) buildSystemPrompt() string {
 	var builder strings.Builder
 	builder.WriteString("You are Littleclaw, an ultra-fast, deeply personalized AI agent.\n")
 	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
-	builder.WriteString("CRITICAL: To manage your memory and knowledge, you MUST solely use the `update_core_memory`, `list_entities`, `read_entity`, and `write_entity` tools. DO NOT use the `write_file` or `append_file` tool to create memory or entity files.\n\n")
+	builder.WriteString("CRITICAL: To manage your memory and knowledge, you MUST solely use the `update_core_memory`, `list_entities`, `read_entity`, and `write_entity` tools. DO NOT use the `write_file` or `append_file` tool to create memory or entity files.\n")
+	builder.WriteString("CRITICAL: If you need to make HTTP requests to external APIs, you MUST use the `exec` tool to run `curl` commands. You absolutely have the capability to fetch from the internet this way.\n\n")
 
 	// Inject Hyper-Personalized Memory
 	builder.WriteString(c.memoryStore.BuildContext())
