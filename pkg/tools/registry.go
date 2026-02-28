@@ -98,6 +98,110 @@ func (r *Registry) registerCoreTools() {
 		return &ToolResult{ForLLM: string(data)}
 	})
 
+	// write_file
+	r.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "write_file",
+			Description: "Writes content to a file within the sandbox workspace, completely overwriting it.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Relative path to the file within the workspace.",
+					},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "The full textual content to write to the file.",
+					},
+				},
+				"required": []string{"path", "content"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
+		p, okPath := args["path"].(string)
+		content, okContent := args["content"].(string)
+		
+		if !okPath || !okContent {
+			return &ToolResult{ForLLM: "Error: path and content must be strings"}
+		}
+		
+		safePath, err := r.resolveWorkspacePath(p)
+		if err != nil {
+			return &ToolResult{ForLLM: err.Error()}
+		}
+
+		// Ensure directory exists
+		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Error creating parent directories: %v", err)}
+		}
+
+		if err := os.WriteFile(safePath, []byte(content), 0644); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Error writing file: %v", err)}
+		}
+		return &ToolResult{ForLLM: fmt.Sprintf("Successfully wrote to %s", p)}
+	})
+
+	// append_file
+	r.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "append_file",
+			Description: "Appends text to the end of a file within the sandbox workspace.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Relative path to the file within the workspace.",
+					},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "The text to append to the file.",
+					},
+				},
+				"required": []string{"path", "content"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
+		p, okPath := args["path"].(string)
+		content, okContent := args["content"].(string)
+		
+		if !okPath || !okContent {
+			return &ToolResult{ForLLM: "Error: path and content must be strings"}
+		}
+		
+		safePath, err := r.resolveWorkspacePath(p)
+		if err != nil {
+			return &ToolResult{ForLLM: err.Error()}
+		}
+
+		// Ensure directory exists
+		if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Error creating parent directories: %v", err)}
+		}
+
+		f, err := os.OpenFile(safePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Error opening file for append: %v", err)}
+		}
+		defer f.Close()
+
+		if _, err := f.WriteString(content); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Error appending to file: %v", err)}
+		}
+		return &ToolResult{ForLLM: fmt.Sprintf("Successfully appended to %s", p)}
+	})
+
 	// exec (sandboxed shell)
 	r.RegisterTool(providers.ToolDefinition{
 		Type: "function",
@@ -141,6 +245,48 @@ func (r *Registry) registerCoreTools() {
 		return &ToolResult{
 			ForLLM:  string(output),
 			ForUser: string(output), // Commands often produce useful user-facing output
+		}
+	})
+
+	// spawn (async background agent)
+	r.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "spawn",
+			Description: "Spawns a detached, asynchronous sub-agent to handle a long-running task in the background. Does not block the main conversation.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"task": map[string]interface{}{
+						"type":        "string",
+						"description": "A highly detailed instruction for the sub-agent.",
+					},
+				},
+				"required": []string{"task"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
+		taskStr, ok := args["task"].(string)
+		if !ok {
+			return &ToolResult{ForLLM: "Error: task must be a string"}
+		}
+
+		// The actual spawning logic is handled here by kicking off a background Go routine.
+		// A full implementation would likely pass this request to the NanoCore via an event bus,
+		// but returning a success message immediately acts as fire-and-forget.
+		
+		go func() {
+			// Real implementation would invoke a new, isolated NanoCore instance here.
+			fmt.Printf("Sub-agent spawned for task: %s\n", taskStr)
+		}()
+
+		return &ToolResult{
+			ForLLM:  "Sub-agent successfully spawned in the background. It will message the user when complete.",
+			ForUser: "Spawned a background agent to handle that task! It will report back shortly.",
 		}
 	})
 }

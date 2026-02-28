@@ -28,13 +28,17 @@ func NewNanoCore(provider providers.Provider, workspace string, msgBus *bus.Mess
 		return nil, fmt.Errorf("memory init failed: %w", err)
 	}
 
-	return &NanoCore{
+	nc := &NanoCore{
 		provider:     provider,
 		memoryStore:  memStore,
 		toolRegistry: tools.NewRegistry(workspace),
 		msgBus:       msgBus,
 		workspace:    workspace,
-	}, nil
+	}
+
+	nc.registerMemoryTools()
+
+	return nc, nil
 }
 
 // RunAgentLoop processes an incoming user message through a multi-step reasoning loop.
@@ -142,5 +146,113 @@ func (c *NanoCore) sendResponse(chatID, channel, content string) {
 		Channel: channel,
 		ChatID:  chatID,
 		Content: content,
+	})
+}
+
+// registerMemoryTools adds tools that interact directly with the memory store
+func (c *NanoCore) registerMemoryTools() {
+	// 1. update_core_memory
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "update_core_memory",
+			Description: "Updates the long-term core memory profile (MEMORY.md). This permanently overrides the user's profile and preferences.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "The full, unstructured textual content representing the user's core memory facts.",
+					},
+				},
+				"required": []string{"content"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		content, ok := args["content"].(string)
+		if !ok {
+			return &tools.ToolResult{ForLLM: "Error: content must be a string"}
+		}
+		
+		if err := c.memoryStore.WriteLongTerm(content); err != nil {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error updating core memory: %v", err)}
+		}
+		return &tools.ToolResult{ForLLM: "Successfully updated core memory (MEMORY.md)."}
+	})
+
+	// 2. read_entity
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "read_entity",
+			Description: "Reads the deep contextual file for a specific entity (a person, place, project, or topic).",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"entity_name": map[string]interface{}{
+						"type":        "string",
+						"description": "The name of the entity to look up (e.g., 'Alice_Smith', 'Project_Phoenix').",
+					},
+				},
+				"required": []string{"entity_name"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		name, ok := args["entity_name"].(string)
+		if !ok {
+			return &tools.ToolResult{ForLLM: "Error: entity_name must be a string"}
+		}
+		
+		data := c.memoryStore.ReadEntity(name)
+		if data == "" {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("No existing record found for entity: %s", name)}
+		}
+		return &tools.ToolResult{ForLLM: data}
+	})
+
+	// 3. write_entity
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "write_entity",
+			Description: "Creates or updates a deeply-contextualized knowledge record for a specific entity.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"entity_name": map[string]interface{}{
+						"type":        "string",
+						"description": "The name of the entity.",
+					},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "The structured or unstructured information to save about the entity.",
+					},
+				},
+				"required": []string{"entity_name", "content"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		name, okName := args["entity_name"].(string)
+		content, okContent := args["content"].(string)
+		if !okName || !okContent {
+			return &tools.ToolResult{ForLLM: "Error: entity_name and content must be strings"}
+		}
+		
+		if err := c.memoryStore.WriteEntity(name, content); err != nil {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error writing entity: %v", err)}
+		}
+		return &tools.ToolResult{ForLLM: fmt.Sprintf("Successfully saved record for entity: %s", name)}
 	})
 }

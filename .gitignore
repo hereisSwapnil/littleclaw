@@ -34,3 +34,5 @@ go.work.sum
 # addded
 .DS_Store
 bin
+.env
+*.md

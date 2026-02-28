@@ -8,15 +8,23 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"littleclaw/pkg/agent"
 	"littleclaw/pkg/bus"
 	"littleclaw/pkg/channels/telegram"
 	"littleclaw/pkg/providers"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
 	fmt.Println("🦐 Starting Littleclaw Agent...")
+
+	// 0. Load .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("⚠️ No .env file found. Proceeding with system environment variables.")
+	}
 
 	// 1. Setup Data Paths
 	home, err := os.UserHomeDir()
@@ -60,16 +68,24 @@ func main() {
 	// Initialize the Telegram Channel
 	tgChannel := telegram.NewChannel(tgToken, allowedUsers, msgBus)
 
+	// Initialize the Background Heartbeat (Memory Janitor & Cron)
+	// Setting interval to 30 seconds for easy testing. In production, this should be ~30 minutes.
+	hb := agent.NewHeartbeat(nanoCore, 30*time.Second)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 4. Start Telegram Listener
+	// 4. Start Background Heartbeat
+	go hb.Start(ctx)
+	log.Println("✅ Background Heartbeat daemon started.")
+
+	// 5. Start Telegram Listener
 	if err := tgChannel.Start(ctx); err != nil {
 		log.Fatalf("Failed to start Telegram channel: %v", err)
 	}
 	log.Println("✅ Telegram channel started successfully. Listening for messages...")
 
-	// 5. Start Message Processing Loop
+	// 6. Start Message Processing Loop
 	go func() {
 		for {
 			select {
