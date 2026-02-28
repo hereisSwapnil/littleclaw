@@ -54,9 +54,10 @@ func (h *Heartbeat) triggerConsolidation(ctx context.Context) {
 		SenderID: "system",
 		ChatID:   "internal_memory",
 		Content: `[SYSTEM CONSOLIDATION REQUEST]
-Read the recent HISTORY.md file. 
+Review the recent conversational history provided in your system prompt.
 Extract any core facts, user preferences, projects, or entity relationships.
-Update MEMORY.md and specific ENTITIES/*.md files.
+Use the 'update_core_memory' tool to update core facts.
+Use the 'list_entities' and 'write_entity' tools to manage specific entity records.
 You MUST be concise. Do not chat. Only use tools to read and write.`,
 	}
 	

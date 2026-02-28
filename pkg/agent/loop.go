@@ -33,7 +33,7 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 	nc := &NanoCore{
 		provider:     provider,
 		memoryStore:  memStore,
-		toolRegistry: tools.NewRegistry(workspace),
+		toolRegistry: tools.NewRegistry(workspace, memStore),
 		msgBus:       msgBus,
 		workspace:    workspace,
 		providerType: providerType,
@@ -169,7 +169,8 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 func (c *NanoCore) buildSystemPrompt() string {
 	var builder strings.Builder
 	builder.WriteString("You are Littleclaw, an ultra-fast, deeply personalized AI agent.\n")
-	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n\n")
+	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
+	builder.WriteString("CRITICAL: To manage your memory and knowledge, you MUST solely use the `update_core_memory`, `list_entities`, `read_entity`, and `write_entity` tools. DO NOT use the `write_file` or `append_file` tool to create memory or entity files.\n\n")
 
 	// Inject Hyper-Personalized Memory
 	builder.WriteString(c.memoryStore.BuildContext())

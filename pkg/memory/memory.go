@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Store represents the persistent, two-tier memory system.
 type Store struct {
+	mu           sync.RWMutex
 	workspaceDir string
 	memoryDir    string
 	entitiesDir  string
@@ -42,6 +44,9 @@ func NewStore(workspace string) (*Store, error) {
 
 // ReadLongTerm returns the current core facts and preferences from MEMORY.md.
 func (s *Store) ReadLongTerm() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	data, err := os.ReadFile(s.memoryFile)
 	if err != nil {
 		return ""
@@ -51,11 +56,24 @@ func (s *Store) ReadLongTerm() string {
 
 // WriteLongTerm completely overwrites MEMORY.md with new consolidated facts.
 func (s *Store) WriteLongTerm(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	return os.WriteFile(s.memoryFile, []byte(content), 0644)
 }
 
 // AppendHistory logs an interaction block to the chronological HISTORY.md file.
 func (s *Store) AppendHistory(role, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Handle history rotation if file gets too large (e.g., > 1MB)
+	if info, err := os.Stat(s.historyFile); err == nil && info.Size() > 1024*1024 {
+		archiveName := fmt.Sprintf("HISTORY_ARCHIVE_%s.md", time.Now().Format("20060102_150405"))
+		archivePath := filepath.Join(s.memoryDir, archiveName)
+		_ = os.Rename(s.historyFile, archivePath)
+	}
+
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	entry := fmt.Sprintf("[%s] %s: %s\n\n", timestamp, strings.ToUpper(role), content)
 	
@@ -71,6 +89,9 @@ func (s *Store) AppendHistory(role, content string) error {
 
 // AppendInternal logs background operations and reasoning blocks to INTERNAL.md.
 func (s *Store) AppendInternal(role, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	entry := fmt.Sprintf("[%s] %s: %s\n\n", timestamp, strings.ToUpper(role), content)
 	
@@ -86,6 +107,9 @@ func (s *Store) AppendInternal(role, content string) error {
 
 // ReadRecentHistory returns the most recent portion of the HISTORY.md file (up to maxBytes).
 func (s *Store) ReadRecentHistory(maxBytes int) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	info, err := os.Stat(s.historyFile)
 	if err != nil {
 		return ""
@@ -130,6 +154,9 @@ func (s *Store) ReadRecentHistory(maxBytes int) string {
 
 // ReadEntity reads specific deeply-contextualized knowledge about a person, project, or topic.
 func (s *Store) ReadEntity(entityName string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// sanitize entity name for file system
 	safeName := strings.ReplaceAll(entityName, " ", "_") + ".md"
 	data, err := os.ReadFile(filepath.Join(s.entitiesDir, safeName))
@@ -141,6 +168,9 @@ func (s *Store) ReadEntity(entityName string) string {
 
 // WriteEntity creates or updates a deeply-contextualized knowledge record.
 func (s *Store) WriteEntity(entityName, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	safeName := strings.ReplaceAll(entityName, " ", "_") + ".md"
 	return os.WriteFile(filepath.Join(s.entitiesDir, safeName), []byte(content), 0644)
 }
@@ -148,9 +178,32 @@ func (s *Store) WriteEntity(entityName, content string) error {
 // BuildContext forms the complete context string to inject into the LLM system prompt.
 func (s *Store) BuildContext() string {
 	longTerm := s.ReadLongTerm()
+	
 	if longTerm == "" {
 		return "No deeply personalized memory found yet."
 	}
 	
 	return "## Personal Context & Memory\n\n" + longTerm
+}
+
+// ListEntities returns a list of all existing entity names (without the .md extension).
+func (s *Store) ListEntities() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := os.ReadDir(s.entitiesDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read entities directory: %w", err)
+	}
+
+	var entities []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+			name := strings.TrimSuffix(entry.Name(), ".md")
+			// Convert back from snake_case to spaces if needed (best effort)
+			name = strings.ReplaceAll(name, "_", " ")
+			entities = append(entities, name)
+		}
+	}
+	return entities, nil
 }

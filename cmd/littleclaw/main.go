@@ -96,10 +96,37 @@ func runConfigure() {
 	fmt.Println("You can now run 'go run cmd/littleclaw/main.go' to start the agent.")
 }
 
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "configure" {
-		runConfigure()
+func runReset() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Cannot get home dir: %v", err)
+	}
+	workspaceDir := filepath.Join(home, ".littleclaw", "workspace")
+
+	fmt.Printf("🗑️ Are you sure you want to reset Littleclaw's entire workspace? This will delete all memory, history, entities, and downloaded files in %s. (y/N): ", workspaceDir)
+	var confirm string
+	fmt.Scanln(&confirm)
+	if confirm != "y" && confirm != "Y" {
+		fmt.Println("Reset cancelled.")
 		return
+	}
+
+	if err := os.RemoveAll(workspaceDir); err != nil {
+		log.Fatalf("❌ Failed to reset workspace: %v", err)
+	}
+	
+	fmt.Println("✅ Littleclaw workspace has been successfully reset!")
+}
+
+func main() {
+	if len(os.Args) > 1 {
+		if os.Args[1] == "configure" {
+			runConfigure()
+			return
+		} else if os.Args[1] == "reset" {
+			runReset()
+			return
+		}
 	}
 
 	fmt.Println("🦐 Starting Littleclaw Agent...")

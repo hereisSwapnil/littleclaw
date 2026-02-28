@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"littleclaw/pkg/memory"
 	"littleclaw/pkg/providers"
 )
 
@@ -24,14 +25,16 @@ type Handler func(ctx context.Context, args map[string]interface{}) *ToolResult
 // Registry holds the registered tools and their handlers.
 type Registry struct {
 	workspaceDir string
+	memoryStore  *memory.Store // Optional reference to memory store
 	definitions  []providers.ToolDefinition
 	handlers     map[string]Handler
 }
 
 // NewRegistry initializes a tool registry configured for the given workspace.
-func NewRegistry(workspaceDir string) *Registry {
+func NewRegistry(workspaceDir string, mem *memory.Store) *Registry {
 	r := &Registry{
 		workspaceDir: workspaceDir,
+		memoryStore:  mem,
 		definitions:  []providers.ToolDefinition{},
 		handlers:     make(map[string]Handler),
 	}
@@ -60,6 +63,38 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]int
 
 // Core execution sandbox tools
 func (r *Registry) registerCoreTools() {
+	// list_entities
+	r.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "list_entities",
+			Description: "Lists all currently known entity topics in the memory system. Use this to avoid creating duplicate entities.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
+		if r.memoryStore == nil {
+			return &ToolResult{ForLLM: "Error: Memory store is not attached to this registry."}
+		}
+
+		entities, err := r.memoryStore.ListEntities()
+		if err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Error reading entities: %v", err)}
+		}
+
+		if len(entities) == 0 {
+			return &ToolResult{ForLLM: "No entities found in memory."}
+		}
+
+		return &ToolResult{ForLLM: fmt.Sprintf("Known entities: %s", strings.Join(entities, ", "))}
+	})
+
 	// read_file
 	r.RegisterTool(providers.ToolDefinition{
 		Type: "function",
@@ -298,8 +333,7 @@ func (r *Registry) registerCoreTools() {
 		}
 
 		return &ToolResult{
-			ForLLM:  string(output),
-			ForUser: string(output), // Commands often produce useful user-facing output
+			ForLLM: string(output),
 		}
 	})
 
@@ -351,7 +385,8 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 	if filepath.IsAbs(p) {
 		cleaned := filepath.Clean(p)
 		if strings.HasPrefix(cleaned, r.workspaceDir) {
-			return cleaned, nil
+			p = strings.TrimPrefix(cleaned, r.workspaceDir)
+			p = strings.TrimPrefix(p, "/")
 		}
 	}
 
@@ -359,6 +394,14 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 	if !strings.HasPrefix(cleanPath, r.workspaceDir) {
 		return "", fmt.Errorf("Error: Path %s escapes workspace boundaries", p)
 	}
+
+	// Safeguard: Prevent LLM from bypassing memory tools by manually reading/writing memory files
+	base := filepath.Base(cleanPath)
+	dir := filepath.Dir(cleanPath)
+	if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" || strings.Contains(dir, "ENTITIES") || base == "ENTITIES" {
+		return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. You MUST use 'update_core_memory', 'write_entity', 'list_entities', or 'read_entity' instead.")
+	}
+
 	return cleanPath, nil
 }
 
