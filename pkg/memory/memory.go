@@ -15,6 +15,7 @@ type Store struct {
 	entitiesDir  string
 	memoryFile   string
 	historyFile  string
+	internalFile string
 }
 
 // NewStore initializes the memory system paths and creates directories holding the knowledge.
@@ -28,6 +29,7 @@ func NewStore(workspace string) (*Store, error) {
 		entitiesDir:  entitiesDir,
 		memoryFile:   filepath.Join(memoryDir, "MEMORY.md"),
 		historyFile:  filepath.Join(memoryDir, "HISTORY.md"),
+		internalFile: filepath.Join(memoryDir, "INTERNAL.md"),
 	}
 
 	// Ensure directories exist
@@ -65,6 +67,65 @@ func (s *Store) AppendHistory(role, content string) error {
 
 	_, err = f.WriteString(entry)
 	return err
+}
+
+// AppendInternal logs background operations and reasoning blocks to INTERNAL.md.
+func (s *Store) AppendInternal(role, content string) error {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	entry := fmt.Sprintf("[%s] %s: %s\n\n", timestamp, strings.ToUpper(role), content)
+	
+	f, err := os.OpenFile(s.internalFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = f.WriteString(entry)
+	return err
+}
+
+// ReadRecentHistory returns the most recent portion of the HISTORY.md file (up to maxBytes).
+func (s *Store) ReadRecentHistory(maxBytes int) string {
+	info, err := os.Stat(s.historyFile)
+	if err != nil {
+		return ""
+	}
+
+	size := info.Size()
+	if size == 0 {
+		return ""
+	}
+
+	start := int64(0)
+	if size > int64(maxBytes) {
+		start = size - int64(maxBytes)
+	}
+
+	f, err := os.Open(s.historyFile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(start, 0); err != nil {
+		return ""
+	}
+
+	buf := make([]byte, size-start)
+	if _, err := f.Read(buf); err != nil {
+		return ""
+	}
+
+	str := string(buf)
+	// If we didn't read from the very beginning, snap to the first full line to avoid cut-off words
+	if start > 0 {
+		idx := strings.Index(str, "\n")
+		if idx >= 0 && idx < len(str)-1 {
+			str = str[idx+1:]
+		}
+	}
+	
+	return strings.TrimSpace(str)
 }
 
 // ReadEntity reads specific deeply-contextualized knowledge about a person, project, or topic.

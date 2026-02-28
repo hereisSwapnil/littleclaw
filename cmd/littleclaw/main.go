@@ -15,15 +15,105 @@ import (
 	"littleclaw/pkg/channels/telegram"
 	"littleclaw/pkg/providers"
 
+	"littleclaw/pkg/config"
+
 	"github.com/joho/godotenv"
 )
 
+func runConfigure() {
+	fmt.Println("🦐 Littleclaw Configuration Wizard")
+	fmt.Println("---------------------------------")
+	
+	cfg := &config.AppConfig{}
+	
+	fmt.Print("Enter Telegram Bot Token: ")
+	fmt.Scanln(&cfg.TelegramToken)
+
+	fmt.Print("Enter Restricted Telegram User ID (Optional, press Enter for none): ")
+	fmt.Scanln(&cfg.TelegramAllowedUser)
+
+	fmt.Print("Choose LLM Provider (openrouter, ollama, openai, anthropic) [openrouter]: ")
+	fmt.Scanln(&cfg.ProviderType)
+	if cfg.ProviderType == "" {
+		cfg.ProviderType = "openrouter"
+	}
+
+	if cfg.ProviderType == "ollama" {
+		fmt.Print("Enter Ollama Model (e.g. llama3.2) [llama3.2]: ")
+		fmt.Scanln(&cfg.ProviderModel)
+		if cfg.ProviderModel == "" {
+			cfg.ProviderModel = "llama3.2"
+		}
+	} else {
+		fmt.Printf("Enter %s API Key: ", cfg.ProviderType)
+		fmt.Scanln(&cfg.ProviderAPIKey)
+		
+		fmt.Print("Enter Model Name (e.g. gpt-4o-mini) [gpt-4o-mini]: ")
+		fmt.Scanln(&cfg.ProviderModel)
+		if cfg.ProviderModel == "" {
+			cfg.ProviderModel = "gpt-4o-mini"
+		}
+	}
+
+	fmt.Println("\n🔍 Testing Provider Connection...")
+	
+	// Create temporary provider to verify settings before saving
+	var provider providers.Provider
+	if cfg.ProviderType == "ollama" {
+		provider = providers.NewOpenAIProvider("ollama", "http://localhost:11434/v1", "dummy")
+	} else if cfg.ProviderType == "openrouter" {
+		provider = providers.NewOpenAIProvider("openrouter", "https://openrouter.ai/api/v1", cfg.ProviderAPIKey)
+	} else if cfg.ProviderType == "openai" {
+		provider = providers.NewOpenAIProvider("openai", "https://api.openai.com/v1", cfg.ProviderAPIKey)
+	}
+
+	if provider != nil {
+		req := providers.ChatRequest{
+			Model: cfg.ProviderModel,
+			Messages: []providers.Message{ {Role: "user", Content: "Say 'OK' if you can read this."} },
+			MaxTokens: 10,
+		}
+		
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		
+		_, err := provider.Chat(ctx, req)
+		if err != nil {
+			fmt.Printf("❌ Failed to verify provider: %v\n", err)
+			fmt.Println("Please check your API key/Host and try again.")
+			return
+		}
+		fmt.Println("✅ Connection successful!")
+	} else {
+		fmt.Println("⚠️ Unknown provider type, saving config without verification.")
+	}
+
+	if err := cfg.Save(); err != nil {
+		log.Fatalf("❌ Failed to save config: %v", err)
+	}
+	
+	fmt.Println("✅ Configuration saved successfully to ~/.littleclaw/config.json!")
+	fmt.Println("You can now run 'go run cmd/littleclaw/main.go' to start the agent.")
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "configure" {
+		runConfigure()
+		return
+	}
+
 	fmt.Println("🦐 Starting Littleclaw Agent...")
 
-	// 0. Load .env file
-	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ No .env file found. Proceeding with system environment variables.")
+	// 0. Try loading from Config File first
+	cfg, err := config.Load()
+	if err != nil {
+		// Fallback to testing ENV variables so we don't break backward compatibility instantly
+		if err := godotenv.Load(); err != nil {
+			log.Println("⚠️ Could not load config.json or .env file.")
+			log.Println("Please run: 'go run cmd/littleclaw/main.go configure'")
+			log.Fatal(err)
+		}
+		log.Println("⚠️ Using Legacy .env configuration. Consider running 'littleclaw configure'.")
 	}
 
 	// 1. Setup Data Paths
@@ -33,14 +123,72 @@ func main() {
 	}
 	workspace := filepath.Join(home, ".littleclaw", "workspace")
 
-	// 2. Load Configuration (Simulated via ENV for Phase 1)
-	tgToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	tgAllowedUser := os.Getenv("TELEGRAM_ALLOWED_USER_ID")
-	openRouterKey := os.Getenv("OPENROUTER_API_KEY")
+	// 2. Load Configuration
+	var tgToken, tgAllowedUser, providerType, modelName, providerAPIKey string
 
-	if tgToken == "" || openRouterKey == "" {
-		log.Println("⚠️ Missing API keys! Please set TELEGRAM_BOT_TOKEN and OPENROUTER_API_KEY.")
-		log.Println("Run: export TELEGRAM_BOT_TOKEN='...' && export OPENROUTER_API_KEY='...'")
+	if cfg != nil {
+		// Read from config.json
+		tgToken = cfg.TelegramToken
+		tgAllowedUser = cfg.TelegramAllowedUser
+		providerType = cfg.ProviderType
+		modelName = cfg.ProviderModel
+		providerAPIKey = cfg.ProviderAPIKey
+	} else {
+		// Legacy .env fallback
+		tgToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+		tgAllowedUser = os.Getenv("TELEGRAM_ALLOWED_USER_ID")
+		providerType = os.Getenv("LLM_PROVIDER")
+		if providerType == "" {
+			providerType = "openrouter" // Default
+		}
+
+		if providerType == "ollama" {
+			modelName = os.Getenv("OLLAMA_MODEL")
+			if modelName == "" {
+				modelName = "llama3.2" 
+			}
+		} else {
+			providerAPIKey = os.Getenv("OPENROUTER_API_KEY")
+			modelName = "gpt-4o-mini"
+		}
+	}
+
+	if tgToken == "" {
+		log.Println("⚠️ Missing Telegram Token! Please run 'go run cmd/littleclaw/main.go configure'")
+		log.Fatal("Exiting due to missing configuration.")
+	}
+
+	var provider providers.Provider
+
+	if providerType == "ollama" {
+		log.Printf("🤖 Initializing Ollama provider with model: %s", modelName)
+		provider = providers.NewOpenAIProvider(
+			"ollama",
+			"http://localhost:11434/v1", // Standard Ollama local port
+			"ollama",                    // Dummy key
+		)
+	} else {
+		if providerAPIKey == "" {
+			log.Println("⚠️ Missing API keys! Please run 'go run cmd/littleclaw/main.go configure'")
+			log.Fatal("Exiting due to missing configuration.")
+		}
+		
+		log.Printf("🤖 Initializing %s provider", providerType)
+		
+		baseURL := "https://openrouter.ai/api/v1"
+		if providerType == "openai" {
+			baseURL = "https://api.openai.com/v1"
+		}
+
+		provider = providers.NewOpenAIProvider(
+			providerType,
+			baseURL,
+			providerAPIKey,
+		)
+	}
+
+	if tgToken == "" {
+		log.Println("⚠️ Missing TELEGRAM_BOT_TOKEN. Export it to continue.")
 		log.Fatal("Exiting due to missing configuration.")
 	}
 
@@ -52,15 +200,8 @@ func main() {
 	// 3. Initialize Core Infrastructure
 	msgBus := bus.NewMessageBus()
 
-	// Initialize Provider (Using OpenRouter via OpenAI Compatibility)
-	provider := providers.NewOpenAIProvider(
-		"openrouter",
-		"https://openrouter.ai/api/v1",
-		openRouterKey,
-	)
-
 	// Initialize the NanoCore Agent Loop
-	nanoCore, err := agent.NewNanoCore(provider, workspace, msgBus)
+	nanoCore, err := agent.NewNanoCore(provider, providerType, modelName, workspace, msgBus)
 	if err != nil {
 		log.Fatalf("Failed to initialize Agent Core: %v", err)
 	}
@@ -99,7 +240,7 @@ func main() {
 			case outMsg := <-msgBus.Outbound:
 				// Route outbound message back to Telegram
 				if outMsg.Channel == "telegram" {
-					if err := tgChannel.SendMessage(ctx, outMsg.ChatID, outMsg.Content); err != nil {
+					if err := tgChannel.SendMessage(ctx, outMsg.ChatID, outMsg.Content, outMsg.Files); err != nil {
 						log.Printf("❌ Failed to send Telegram message: %v", err)
 					}
 				}

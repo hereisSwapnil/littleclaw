@@ -19,10 +19,12 @@ type NanoCore struct {
 	toolRegistry *tools.Registry
 	msgBus       *bus.MessageBus
 	workspace    string
+	providerType string
+	modelName    string
 }
 
 // NewNanoCore initializes the main agent brain.
-func NewNanoCore(provider providers.Provider, workspace string, msgBus *bus.MessageBus) (*NanoCore, error) {
+func NewNanoCore(provider providers.Provider, providerType, modelName, workspace string, msgBus *bus.MessageBus) (*NanoCore, error) {
 	memStore, err := memory.NewStore(workspace)
 	if err != nil {
 		return nil, fmt.Errorf("memory init failed: %w", err)
@@ -34,6 +36,8 @@ func NewNanoCore(provider providers.Provider, workspace string, msgBus *bus.Mess
 		toolRegistry: tools.NewRegistry(workspace),
 		msgBus:       msgBus,
 		workspace:    workspace,
+		providerType: providerType,
+		modelName:    modelName,
 	}
 
 	nc.registerMemoryTools()
@@ -46,14 +50,23 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 	// 1. Build initial context (System Prompt + Memory)
 	sysPrompt := c.buildSystemPrompt()
 
-	// 2. Initialize conversation history (in a real system, you'd load the recent session history here)
+	// 2. Initialize conversation history
+	userPrompt := msg.Content
+	if msg.ReplyTo != "" {
+		userPrompt = fmt.Sprintf("Context (User is replying to this previous message):\n\"%s\"\n\nUser's message: %s", msg.ReplyTo, msg.Content)
+	}
+
 	messages := []providers.Message{
 		{Role: "system", Content: sysPrompt},
-		{Role: "user", Content: msg.Content}, // Omit media for brevity in this foundational version
+		{Role: "user", Content: userPrompt}, // Omit media for brevity in this foundational version
 	}
 
 	// 3. Log user message to history
-	c.memoryStore.AppendHistory("USER", msg.Content)
+	if msg.Channel == "internal" {
+		c.memoryStore.AppendInternal("SYSTEM", userPrompt)
+	} else {
+		c.memoryStore.AppendHistory("USER", userPrompt)
+	}
 
 	maxIterations := 10
 	iteration := 0
@@ -62,7 +75,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 		iteration++
 
 		req := providers.ChatRequest{
-			Model:       "gpt-4o-mini", // Fallback/Default test model, usually overridden by config
+			Model:       c.modelName,
 			Messages:    messages,
 			Tools:       c.toolRegistry.GetDefinitions(),
 			Temperature: 0.7,
@@ -70,7 +83,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 		resp, err := c.provider.Chat(ctx, req)
 		if err != nil {
-			c.sendResponse(msg.ChatID, msg.Channel, fmt.Sprintf("⚠ API Error: %v", err))
+			c.sendResponse(msg.ChatID, msg.Channel, fmt.Sprintf("⚠ API Error: %v", err), nil)
 			return
 		}
 
@@ -103,9 +116,28 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 					ToolCallID: tc["id"].(string),
 				})
 
-				// If the tool has direct user output (e.g., shell command execution logs)
-				if result.ForUser != "" {
-					c.sendResponse(msg.ChatID, msg.Channel, fmt.Sprintf("🛠 Tool `%s`: %s", toolName, result.ForUser))
+				// If the tool has direct user output (e.g., shell command execution logs) or files
+				if result.ForUser != "" || len(result.Files) > 0 {
+					outMsg := result.ForUser
+					if toolName != "send_telegram_file" && result.ForUser != "" {
+						outMsg = fmt.Sprintf("🛠 Tool `%s`: %s", toolName, result.ForUser)
+					}
+					c.sendResponse(msg.ChatID, msg.Channel, outMsg, result.Files)
+
+					// Log tool outputs directly to memory history so the agent remembers
+					historyMsg := outMsg
+					if len(result.Files) > 0 {
+						if historyMsg != "" {
+							historyMsg += " "
+						}
+						historyMsg += fmt.Sprintf("[Attached files: %s]", strings.Join(result.Files, ", "))
+					}
+					
+					if msg.Channel == "internal" {
+						c.memoryStore.AppendInternal("ASSISTANT", historyMsg)
+					} else {
+						c.memoryStore.AppendHistory("ASSISTANT", historyMsg)
+					}
 				}
 			}
 
@@ -119,14 +151,18 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 		// If no tools, it's a final response
 		if resp.Content != "" {
-			c.sendResponse(msg.ChatID, msg.Channel, resp.Content)
-			c.memoryStore.AppendHistory("ASSISTANT", resp.Content)
+			c.sendResponse(msg.ChatID, msg.Channel, resp.Content, nil)
+			if msg.Channel == "internal" {
+				c.memoryStore.AppendInternal("ASSISTANT", resp.Content)
+			} else {
+				c.memoryStore.AppendHistory("ASSISTANT", resp.Content)
+			}
 		}
 		break
 	}
 	
 	if iteration >= maxIterations {
-		c.sendResponse(msg.ChatID, msg.Channel, "⚠ Reached maximum inference iterations.")
+		c.sendResponse(msg.ChatID, msg.Channel, "⚠ Reached maximum inference iterations.", nil)
 	}
 }
 
@@ -138,14 +174,23 @@ func (c *NanoCore) buildSystemPrompt() string {
 	// Inject Hyper-Personalized Memory
 	builder.WriteString(c.memoryStore.BuildContext())
 
+	// Inject Short-Term Conversation Context
+	recentHistory := c.memoryStore.ReadRecentHistory(4000) // ~1000 tokens of history
+	if recentHistory != "" {
+		builder.WriteString("\n\n## Recent Conversational History\n\n")
+		builder.WriteString(recentHistory)
+		builder.WriteString("\n\n(Note: The above is the recent conversation log. Use it to understand references like 'that file' or 'send it again'.)\n")
+	}
+
 	return builder.String()
 }
 
-func (c *NanoCore) sendResponse(chatID, channel, content string) {
+func (c *NanoCore) sendResponse(chatID, channel, content string, files []string) {
 	c.msgBus.SendOutbound(bus.OutboundMessage{
 		Channel: channel,
 		ChatID:  chatID,
 		Content: content,
+		Files:   files,
 	})
 }
 

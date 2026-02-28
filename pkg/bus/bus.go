@@ -6,6 +6,7 @@ type InboundMessage struct {
 	SenderID string
 	ChatID   string
 	Content  string
+	ReplyTo  string   // Content of the message being replied to (if any)
 	Media    []string // URLs or local paths to media
 }
 
@@ -14,6 +15,7 @@ type OutboundMessage struct {
 	Channel string
 	ChatID  string
 	Content string
+	Files   []string // List of absolute file paths to send
 }
 
 // MessageBus routes messages between channels and the agent core

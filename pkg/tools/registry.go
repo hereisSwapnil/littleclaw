@@ -13,8 +13,9 @@ import (
 
 // ToolResult represents the output of a tool execution.
 type ToolResult struct {
-	ForLLM  string // Sent back to the language model
-	ForUser string // (Optional) Sent directly to the user
+	ForLLM  string   // Sent back to the language model
+	ForUser string   // (Optional) Sent directly to the user
+	Files   []string // (Optional) Absolute paths of files to attach to the user response
 }
 
 // Handler handles the execution of a specific tool.
@@ -202,6 +203,60 @@ func (r *Registry) registerCoreTools() {
 		return &ToolResult{ForLLM: fmt.Sprintf("Successfully appended to %s", p)}
 	})
 
+	// send_telegram_file
+	r.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "send_telegram_file",
+			Description: "Attaches and sends a specific local file to the user over Telegram.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Relative path to the file within the workspace to send.",
+					},
+					"caption": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional textual message to send alongside the file.",
+					},
+				},
+				"required": []string{"path"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
+		p, ok := args["path"].(string)
+		if !ok {
+			return &ToolResult{ForLLM: "Error: path must be a string"}
+		}
+		
+		safePath, err := r.resolveWorkspacePath(p)
+		if err != nil {
+			return &ToolResult{ForLLM: err.Error()}
+		}
+
+		// Validate file exists before claiming success
+		info, err := os.Stat(safePath)
+		if err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("Cannot find file to send: %v", err)}
+		}
+		if info.IsDir() {
+			return &ToolResult{ForLLM: "Error: Cannot send entire directories. Specify a file."}
+		}
+
+		caption, _ := args["caption"].(string)
+
+		return &ToolResult{
+			ForLLM:  fmt.Sprintf("Successfully queued %s for sending to Telegram.", p),
+			ForUser: caption,
+			Files:   []string{safePath},
+		}
+	})
+
 	// exec (sandboxed shell)
 	r.RegisterTool(providers.ToolDefinition{
 		Type: "function",
@@ -292,6 +347,14 @@ func (r *Registry) registerCoreTools() {
 }
 
 func (r *Registry) resolveWorkspacePath(p string) (string, error) {
+	// If the LLM passed an absolute path that already contains the workspace dir
+	if filepath.IsAbs(p) {
+		cleaned := filepath.Clean(p)
+		if strings.HasPrefix(cleaned, r.workspaceDir) {
+			return cleaned, nil
+		}
+	}
+
 	cleanPath := filepath.Clean(filepath.Join(r.workspaceDir, p))
 	if !strings.HasPrefix(cleanPath, r.workspaceDir) {
 		return "", fmt.Errorf("Error: Path %s escapes workspace boundaries", p)

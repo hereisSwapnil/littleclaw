@@ -79,10 +79,24 @@ func (t *Channel) handleIncoming(update tgbotapi.Update, userID, chatID string) 
 		text = update.Message.Caption
 	}
 
+	replyTo := ""
+	if update.Message.ReplyToMessage != nil {
+		replyTo = update.Message.ReplyToMessage.Text
+		if replyTo == "" && update.Message.ReplyToMessage.Caption != "" {
+			replyTo = update.Message.ReplyToMessage.Caption
+		}
+		if update.Message.ReplyToMessage.Document != nil {
+			if replyTo != "" {
+				replyTo += "\n"
+			}
+			replyTo += fmt.Sprintf("[Document: %s]", update.Message.ReplyToMessage.Document.FileName)
+		}
+	}
+
 	var mediaURLs []string
 	
 	// Handle photos (vision)
-	if update.Message.Photo != nil && len(update.Message.Photo) > 0 {
+	if len(update.Message.Photo) > 0 {
 		photos := update.Message.Photo
 		largest := photos[len(photos)-1]
 		fileURL, err := t.bot.GetFileDirectURL(largest.FileID)
@@ -99,18 +113,34 @@ func (t *Channel) handleIncoming(update tgbotapi.Update, userID, chatID string) 
 		SenderID: userID,
 		ChatID:   chatID,
 		Content:  text,
+		ReplyTo:  replyTo,
 		Media:    mediaURLs,
 	})
 }
 
 // SendMessage sends a response back to the Telegram chat
-func (t *Channel) SendMessage(ctx context.Context, chatID, content string) error {
+func (t *Channel) SendMessage(ctx context.Context, chatID, content string, files []string) error {
 	id, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid chat ID: %w", err)
 	}
 
-	msg := tgbotapi.NewMessage(id, content)
-	_, err = t.bot.Send(msg)
-	return err
+	// 1. Send all attached files
+	for _, file := range files {
+		// Use native tgbotapi Document sender
+		doc := tgbotapi.NewDocument(id, tgbotapi.FilePath(file))
+		if _, err := t.bot.Send(doc); err != nil {
+			return fmt.Errorf("failed to send file %s: %w", file, err)
+		}
+	}
+
+	// 2. Send the text content if present
+	if content != "" {
+		msg := tgbotapi.NewMessage(id, content)
+		if _, err := t.bot.Send(msg); err != nil {
+			return fmt.Errorf("failed to send text message: %w", err)
+		}
+	}
+	
+	return nil
 }
