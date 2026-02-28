@@ -267,7 +267,7 @@ func main() {
 			case outMsg := <-msgBus.Outbound:
 				// Route outbound message back to Telegram
 				if outMsg.Channel == "telegram" {
-					if err := tgChannel.SendMessage(ctx, outMsg.ChatID, outMsg.Content, outMsg.Files); err != nil {
+					if err := tgChannel.SendMessage(ctx, outMsg.ChatID, outMsg.ReplyToMessageID, outMsg.Content, outMsg.Files); err != nil {
 						log.Printf("❌ Failed to send Telegram message: %v", err)
 					}
 				}

@@ -83,7 +83,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 		resp, err := c.provider.Chat(ctx, req)
 		if err != nil {
-			c.sendResponse(msg.ChatID, msg.Channel, fmt.Sprintf("⚠ API Error: %v", err), nil)
+			c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, fmt.Sprintf("⚠ API Error: %v", err), nil)
 			return
 		}
 
@@ -122,7 +122,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 					if toolName != "send_telegram_file" && result.ForUser != "" {
 						outMsg = fmt.Sprintf("🛠 Tool `%s`: %s", toolName, result.ForUser)
 					}
-					c.sendResponse(msg.ChatID, msg.Channel, outMsg, result.Files)
+					c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, outMsg, result.Files)
 
 					// Log tool outputs directly to memory history so the agent remembers
 					historyMsg := outMsg
@@ -151,7 +151,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 		// If no tools, it's a final response
 		if resp.Content != "" {
-			c.sendResponse(msg.ChatID, msg.Channel, resp.Content, nil)
+			c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, resp.Content, nil)
 			if msg.Channel == "internal" {
 				c.memoryStore.AppendInternal("ASSISTANT", resp.Content)
 			} else {
@@ -162,7 +162,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 	}
 	
 	if iteration >= maxIterations {
-		c.sendResponse(msg.ChatID, msg.Channel, "⚠ Reached maximum inference iterations.", nil)
+		c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, "⚠ Reached maximum inference iterations.", nil)
 	}
 }
 
@@ -186,12 +186,13 @@ func (c *NanoCore) buildSystemPrompt() string {
 	return builder.String()
 }
 
-func (c *NanoCore) sendResponse(chatID, channel, content string, files []string) {
+func (c *NanoCore) sendResponse(chatID string, replyToMessageID int, channel, content string, files []string) {
 	c.msgBus.SendOutbound(bus.OutboundMessage{
-		Channel: channel,
-		ChatID:  chatID,
-		Content: content,
-		Files:   files,
+		Channel:          channel,
+		ChatID:           chatID,
+		ReplyToMessageID: replyToMessageID,
+		Content:          content,
+		Files:            files,
 	})
 }
 
