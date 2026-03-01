@@ -243,9 +243,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 4. Start Background Heartbeat
+	// 4. Start Background Heartbeat & Cron Service
 	go hb.Start(ctx)
-	log.Println("✅ Background Heartbeat daemon started.")
+	nanoCore.StartCronService(ctx)
+	log.Println("✅ Background Heartbeat & Cron daemon started.")
 
 	// 5. Start Telegram Listener
 	if err := tgChannel.Start(ctx); err != nil {

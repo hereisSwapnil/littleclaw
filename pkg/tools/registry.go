@@ -22,26 +22,21 @@ type ToolResult struct {
 // Handler handles the execution of a specific tool.
 type Handler func(ctx context.Context, args map[string]interface{}) *ToolResult
 
-// SpawnCallback is a function that can spawn a detached background agent
-type SpawnCallback func(ctx context.Context, task string)
-
 // Registry holds the registered tools and their handlers.
 type Registry struct {
 	workspaceDir string
 	memoryStore  *memory.Store // Optional reference to memory store
 	definitions  []providers.ToolDefinition
 	handlers     map[string]Handler
-	spawnCb      SpawnCallback
 }
 
 // NewRegistry initializes a tool registry configured for the given workspace.
-func NewRegistry(workspaceDir string, mem *memory.Store, spawnCb SpawnCallback) *Registry {
+func NewRegistry(workspaceDir string, mem *memory.Store) *Registry {
 	r := &Registry{
 		workspaceDir: workspaceDir,
 		memoryStore:  mem,
 		definitions:  []providers.ToolDefinition{},
 		handlers:     make(map[string]Handler),
-		spawnCb:      spawnCb,
 	}
 
 	// Register default sandbox tools
@@ -422,45 +417,6 @@ func (r *Registry) registerCoreTools() {
 
 		return &ToolResult{
 			ForLLM: string(output),
-		}
-	})
-
-	// spawn (async background agent)
-	r.RegisterTool(providers.ToolDefinition{
-		Type: "function",
-		Function: struct {
-			Name        string                 `json:"name"`
-			Description string                 `json:"description"`
-			Parameters  map[string]interface{} `json:"parameters"`
-		}{
-			Name:        "spawn",
-			Description: "Spawns a detached, asynchronous sub-agent to handle a long-running task in the background. Does not block the main conversation.",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"task": map[string]interface{}{
-						"type":        "string",
-						"description": "A highly detailed instruction for the sub-agent.",
-					},
-				},
-				"required": []string{"task"},
-			},
-		},
-	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
-		taskStr, ok := args["task"].(string)
-		if !ok {
-			return &ToolResult{ForLLM: "Error: task must be a string"}
-		}
-
-		if r.spawnCb != nil {
-			go r.spawnCb(context.Background(), taskStr) // use background context to detach 
-		} else {
-			return &ToolResult{ForLLM: "Error: Spawning is not supported in this registry configuration."}
-		}
-
-		return &ToolResult{
-			ForLLM:  "Sub-agent successfully spawned in the background. It will message the user when complete.",
-			ForUser: "Spawned a background agent to handle that task! It will report back shortly.",
 		}
 	})
 

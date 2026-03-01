@@ -12,6 +12,13 @@ import (
 	"littleclaw/pkg/tools"
 )
 
+type contextKey string
+
+const (
+	ctxChatID  contextKey = "chatID"
+	ctxChannel contextKey = "channel"
+)
+
 // NanoCore represents the central Agent ReAct Loop.
 type NanoCore struct {
 	provider     providers.Provider
@@ -21,6 +28,9 @@ type NanoCore struct {
 	workspace    string
 	providerType string
 	modelName    string
+	cronService  *CronService
+	lastChatID   string
+	lastChannel  string
 }
 
 // NewNanoCore initializes the main agent brain.
@@ -30,6 +40,8 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 		return nil, fmt.Errorf("memory init failed: %w", err)
 	}
 
+	cronSvc := NewCronService(workspace, msgBus, memStore)
+
 	nc := &NanoCore{
 		provider:     provider,
 		memoryStore:  memStore,
@@ -37,100 +49,31 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 		workspace:    workspace,
 		providerType: providerType,
 		modelName:    modelName,
+		cronService:  cronSvc,
 	}
 
-	// Initialize registry with the spawn callback
-	nc.toolRegistry = tools.NewRegistry(workspace, memStore, func(ctx context.Context, task string) {
-		nc.SpawnAgent(ctx, task)
-	})
+	// Initialize registry
+	nc.toolRegistry = tools.NewRegistry(workspace, memStore)
 
 	nc.registerMemoryTools()
+	nc.registerCronTools()
 
 	return nc, nil
 }
 
-// SpawnAgent runs an isolated background task utilizing tools and memory, without polluting the main conversation.
-func (c *NanoCore) SpawnAgent(ctx context.Context, taskInstruction string) {
-	fmt.Printf("🚀 Spawning background agent for task: %s\n", taskInstruction)
-	
-	sysPrompt := c.buildSystemPrompt()
-	messages := []providers.Message{
-		{Role: "system", Content: sysPrompt + "\n\nYou are a SUB-AGENT spawned in the background to handle a specific task. Do not wait for user input. Execute tools continuously until the task is complete. When finished, use the 'send_telegram_file' tool or a direct message via 'notify_user' if available, otherwise just complete your loop and the system will log it."},
-		{Role: "user", Content: fmt.Sprintf("Execute the following background task:\n\n%s", taskInstruction)},
-	}
-
-	maxIterations := 15
-	iteration := 0
-
-	for iteration < maxIterations {
-		iteration++
-		
-		req := providers.ChatRequest{
-			Model:       c.modelName,
-			Messages:    messages,
-			Tools:       c.toolRegistry.GetDefinitions(),
-			Temperature: 0.7,
-		}
-
-		resp, err := c.provider.Chat(ctx, req)
-		if err != nil {
-			fmt.Printf("⚠ Sub-agent API Error: %v\n", err)
-			return
-		}
-
-		if len(resp.ToolCalls) > 0 {
-			messages = append(messages, providers.Message{
-				Role:      "assistant",
-				Content:   resp.Content,
-				ToolCalls: resp.ToolCalls,
-			})
-
-			for _, tc := range resp.ToolCalls {
-				toolName := tc["function"].(map[string]interface{})["name"].(string)
-				argsStr := tc["function"].(map[string]interface{})["arguments"].(string)
-
-				var args map[string]interface{}
-				_ = json.Unmarshal([]byte(argsStr), &args)
-
-				result := c.toolRegistry.Execute(ctx, toolName, args)
-
-				messages = append(messages, providers.Message{
-					Role:       "tool",
-					Content:    result.ForLLM,
-					ToolCallID: tc["id"].(string),
-				})
-
-				// Sub-agents might produce files or logs we want to capture internal
-				if result.ForUser != "" || len(result.Files) > 0 {
-					historyMsg := fmt.Sprintf("[Sub-Agent Task Update] Tool '%s' executed: %s", toolName, result.ForUser)
-					if len(result.Files) > 0 {
-						historyMsg += fmt.Sprintf(" [Attached files: %s]", strings.Join(result.Files, ", "))
-					}
-					c.memoryStore.AppendInternal("SUB_AGENT", historyMsg)
-				}
-			}
-
-			messages = append(messages, providers.Message{
-				Role:    "user",
-				Content: "[System Context] Tool execution finished. Continue working on the task.",
-			})
-			continue
-		}
-
-		if resp.Content != "" {
-			c.memoryStore.AppendInternal("SUB_AGENT_FINISHED", resp.Content)
-			fmt.Println("✅ Sub-agent finished execution:", resp.Content)
-		}
-		break
-	}
-	
-	if iteration >= maxIterations {
-		fmt.Println("⚠ Sub-agent reached maximum inference iterations without completing.")
-	}
-}
 
 // RunAgentLoop processes an incoming user message through a multi-step reasoning loop.
 func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
+	// If this is a real user message, track it for background task context
+	if msg.ChatID != "internal_memory" && msg.ChatID != "" {
+		c.lastChatID = msg.ChatID
+		c.lastChannel = msg.Channel
+	}
+
+	// Inject ChatID and Channel into context for cron jobs/tools to use
+	ctx = context.WithValue(ctx, ctxChatID, msg.ChatID)
+	ctx = context.WithValue(ctx, ctxChannel, msg.Channel)
+
 	// 1. Build initial context (System Prompt + Memory)
 	sysPrompt := c.buildSystemPrompt()
 
@@ -388,3 +331,146 @@ func (c *NanoCore) registerMemoryTools() {
 		return &tools.ToolResult{ForLLM: fmt.Sprintf("Successfully saved record for entity: %s", name)}
 	})
 }
+
+// StartCronService starts the cron scheduler in the background.
+func (c *NanoCore) StartCronService(ctx context.Context) {
+	if err := c.cronService.Start(ctx); err != nil {
+		fmt.Printf("⚠️ CronService failed to start: %v\n", err)
+	}
+}
+
+// registerCronTools adds tools that allow the LLM to manage cron jobs.
+func (c *NanoCore) registerCronTools() {
+	// add_cron
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "add_cron",
+			Description: "Schedule a recurring background task using a cron expression. The command is a shell command that runs inside the workspace on each tick. Its stdout will be sent directly to the user. Use '@every Xs' for intervals (e.g. '@every 10s', '@every 1h') or standard 5-field cron syntax.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "A short human-readable label for this task (e.g. 'joke_delivery').",
+					},
+					"schedule": map[string]interface{}{
+						"type":        "string",
+						"description": "The cron schedule. Examples: '@every 10s', '@every 1m', '@hourly', '*/5 * * * *'.",
+					},
+					"command": map[string]interface{}{
+						"type":        "string",
+						"description": "The shell command to run on each tick. Its stdout is sent to the user.",
+					},
+				},
+				"required": []string{"label", "schedule", "command"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		label, _ := args["label"].(string)
+		schedule, _ := args["schedule"].(string)
+		command, _ := args["command"].(string)
+
+		if label == "" || schedule == "" || command == "" {
+			return &tools.ToolResult{ForLLM: "Error: label, schedule, and command are all required."}
+		}
+
+		// Extract chatID and channel from context
+		chatID, _ := ctx.Value(ctxChatID).(string)
+		channel, _ := ctx.Value(ctxChannel).(string)
+
+		// If we are in an internal loop (consolidation), use the last known user context
+		if (chatID == "internal_memory" || chatID == "") && c.lastChatID != "" {
+			chatID = c.lastChatID
+			channel = c.lastChannel
+		}
+
+		if chatID == "internal_memory" || chatID == "" {
+			return &tools.ToolResult{ForLLM: "Error: Cannot schedule cron job from internal context without a prior user interaction. Please wait for the user to message first."}
+		}
+
+		job := &CronJob{
+			ID:       GenerateJobID(label),
+			Label:    label,
+			Schedule: schedule,
+			Command:  command,
+			ChatID:   chatID,
+			Channel:  channel,
+		}
+
+		if err := c.cronService.AddJob(job); err != nil {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("Failed to add cron job: %v", err)}
+		}
+
+		return &tools.ToolResult{
+			ForLLM:  fmt.Sprintf("Cron job '%s' scheduled successfully (ID: %s, schedule: %s).", label, job.ID, schedule),
+		}
+	})
+
+	// remove_cron
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "remove_cron",
+			Description: "Stop and remove a scheduled cron task by its ID.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"job_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The ID of the cron job to remove. Use list_cron to see IDs.",
+					},
+				},
+				"required": []string{"job_id"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		jobID, _ := args["job_id"].(string)
+		if jobID == "" {
+			return &tools.ToolResult{ForLLM: "Error: job_id is required."}
+		}
+
+		if err := c.cronService.RemoveJob(jobID); err != nil {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("Failed to remove cron job: %v", err)}
+		}
+
+		return &tools.ToolResult{ForLLM: fmt.Sprintf("Cron job '%s' removed successfully.", jobID)}
+	})
+
+	// list_cron
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "list_cron",
+			Description: "List all currently scheduled cron jobs, including their IDs, labels, and schedules.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		jobs := c.cronService.ListJobs()
+		if len(jobs) == 0 {
+			return &tools.ToolResult{ForLLM: "No cron jobs are currently scheduled."}
+		}
+
+		result := "Scheduled cron jobs:\n"
+		for _, j := range jobs {
+			result += fmt.Sprintf("- ID: %s | Label: %s | Schedule: %s | Command: %s\n", j.ID, j.Label, j.Schedule, j.Command)
+		}
+		return &tools.ToolResult{ForLLM: result}
+	})
+}
+
