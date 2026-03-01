@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"littleclaw/pkg/bus"
 	"littleclaw/pkg/memory"
@@ -81,13 +80,18 @@ func (cs *CronService) Start(ctx context.Context) error {
 	return nil
 }
 
-// AddJob adds a new cron job, persists it, and schedules it immediately.
+// AddJob adds a new cron job (or replaces an existing one with the same label), persists it, and schedules it.
 func (cs *CronService) AddJob(job *CronJob) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
-	if _, exists := cs.jobs[job.ID]; exists {
-		return fmt.Errorf("job with ID %q already exists", job.ID)
+	// If a job with this ID (label) already exists, remove it first (un-schedule)
+	if oldJob, exists := cs.jobs[job.ID]; exists {
+		log.Printf("⏰ CronService: replacing existing job %s\n", job.ID)
+		if entryID, ok := cs.entryIDs[oldJob.ID]; ok {
+			cs.cronRunner.Remove(entryID)
+			delete(cs.entryIDs, oldJob.ID)
+		}
 	}
 
 	if err := cs.schedule(job); err != nil {
@@ -205,9 +209,9 @@ func (cs *CronService) save() error {
 	return os.WriteFile(cs.dataFile, data, 0644)
 }
 
-// GenerateID creates a simple unique ID from a label and timestamp
+// GenerateJobID creates a simple unique ID from a label
 func GenerateJobID(label string) string {
-	return fmt.Sprintf("%s_%d", sanitizeLabel(label), time.Now().UnixNano()%100000)
+	return sanitizeLabel(label)
 }
 
 func sanitizeLabel(s string) string {

@@ -420,14 +420,11 @@ func (c *NanoCore) registerCronTools() {
 			Parameters  map[string]interface{} `json:"parameters"`
 		}{
 			Name:        "remove_cron",
-			Description: "Stop and remove a scheduled cron task by its ID.",
+			Description: "Stop and remove a scheduled cron task by its ID or Label. Use list_cron to see active tasks.",
 			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"job_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the cron job to remove. Use list_cron to see IDs.",
-					},
+				"job_id": map[string]interface{}{
+					"type":        "string",
+					"description": "The ID or Label of the cron job to remove.",
 				},
 				"required": []string{"job_id"},
 			},
@@ -438,8 +435,22 @@ func (c *NanoCore) registerCronTools() {
 			return &tools.ToolResult{ForLLM: "Error: job_id is required."}
 		}
 
-		if err := c.cronService.RemoveJob(jobID); err != nil {
-			return &tools.ToolResult{ForLLM: fmt.Sprintf("Failed to remove cron job: %v", err)}
+		err := c.cronService.RemoveJob(jobID)
+		if err != nil {
+			// Try finding by label if direct ID removal fails
+			jobs := c.cronService.ListJobs()
+			found := false
+			for _, j := range jobs {
+				if j.Label == jobID || j.ID == jobID {
+					if errRem := c.cronService.RemoveJob(j.ID); errRem == nil {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				return &tools.ToolResult{ForLLM: fmt.Sprintf("Failed to remove cron job: %v", err)}
+			}
 		}
 
 		return &tools.ToolResult{ForLLM: fmt.Sprintf("Cron job '%s' removed successfully.", jobID)}
