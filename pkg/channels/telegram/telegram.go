@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	"littleclaw/pkg/bus"
+	"littleclaw/pkg/providers"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -21,7 +26,8 @@ type Channel struct {
 	allowFrom map[string]bool // Set of allowed user IDs
 
 	typingMu      sync.Mutex
-	typingCancels map[int]context.CancelFunc
+	typingCancels        map[int]context.CancelFunc
+	transcriptionOptions providers.TranscriptionProvider
 }
 
 // NewChannel creates a new Telegram channel
@@ -36,6 +42,12 @@ func NewChannel(token string, allowedUsers []string, messageBus *bus.MessageBus)
 		bus:           messageBus,
 		typingCancels: make(map[int]context.CancelFunc),
 	}
+}
+
+
+// SetTranscriptionProvider attaches a transcription engine to the channel
+func (t *Channel) SetTranscriptionProvider(p providers.TranscriptionProvider) {
+	t.transcriptionOptions = p
 }
 
 // Start connects to Telegram and begins listening for messages
@@ -154,8 +166,43 @@ func (t *Channel) handleIncoming(update tgbotapi.Update, userID, chatID string) 
 		}
 	}
 
-	// Wait on voice transcription handling (to be implemented with Groq/Whisper)
-	// if update.Message.Voice != nil { ... }
+	// Handle voice messages (transcription)
+	if update.Message.Voice != nil && t.transcriptionOptions != nil {
+		voice := update.Message.Voice
+		log.Printf("🎙️ Received voice message (ID: %s, duration: %ds). Transcribing...", voice.FileID, voice.Duration)
+		fileURL, err := t.bot.GetFileDirectURL(voice.FileID)
+		if err != nil {
+			log.Printf("❌ Failed to get voice file URL: %v", err)
+		} else {
+			// Download to temporary file
+			resp, err := http.Get(fileURL)
+			if err != nil {
+				log.Printf("❌ Failed to download voice file: %v", err)
+			} else {
+				defer resp.Body.Close()
+				tmpFile, err := os.CreateTemp("", "voice_*.ogg")
+				if err != nil {
+					log.Printf("❌ Failed to create temp file for voice: %v", err)
+				} else {
+					defer os.Remove(tmpFile.Name())
+					io.Copy(tmpFile, resp.Body)
+					tmpFile.Close()
+
+					// Transcribe
+					transcription, err := t.transcriptionOptions.Transcribe(context.Background(), tmpFile.Name())
+					if err != nil {
+						log.Printf("❌ Transcription failed: %v", err)
+					} else {
+						log.Printf("✅ Transcription successful: %s", transcription)
+						if text != "" {
+							text += "\n"
+						}
+						text += fmt.Sprintf("[Voice Transcription]: %s", transcription)
+					}
+				}
+			}
+		}
+	}
 
 	msgID := update.Message.MessageID
 

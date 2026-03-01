@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"littleclaw/pkg/bus"
@@ -79,6 +80,12 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 	// 2. Initialize conversation history
 	userPrompt := msg.Content
+	if userPrompt == "" {
+		// Log and avoid sending empty prompts to the model which can trigger native language hallucinations
+		log.Printf("⚠️ Received empty message content from %s. Ignoring to prevent hallucination.", msg.SenderID)
+		return
+	}
+
 	if msg.ReplyTo != "" {
 		userPrompt = fmt.Sprintf("Context (User is replying to this previous message):\n\"%s\"\n\nUser's message: %s", msg.ReplyTo, msg.Content)
 	}

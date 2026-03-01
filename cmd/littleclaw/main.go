@@ -13,45 +13,91 @@ import (
 	"littleclaw/pkg/agent"
 	"littleclaw/pkg/bus"
 	"littleclaw/pkg/channels/telegram"
+	"littleclaw/pkg/config"
 	"littleclaw/pkg/providers"
 
-	"littleclaw/pkg/config"
-
 	"github.com/joho/godotenv"
+	"github.com/manifoldco/promptui"
 )
+
+func promptWithDefault(label string, defaultValue string) string {
+	prompt := promptui.Prompt{
+		Label:   label,
+		Default: defaultValue,
+	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		return defaultValue
+	}
+	return result
+}
+
+func selectOption(label string, options []string, defaultValue string) string {
+	cursorPos := 0
+	for i, opt := range options {
+		if opt == defaultValue {
+			cursorPos = i
+			break
+		}
+	}
+
+	prompt := promptui.Select{
+		Label:     label,
+		Items:     options,
+		CursorPos: cursorPos,
+	}
+
+	_, result, err := prompt.Run()
+	if err != nil {
+		return defaultValue
+	}
+	return result
+}
 
 func runConfigure() {
 	fmt.Println("🦐 Littleclaw Configuration Wizard")
 	fmt.Println("---------------------------------")
-	
-	cfg := &config.AppConfig{}
-	
-	fmt.Print("Enter Telegram Bot Token: ")
-	fmt.Scanln(&cfg.TelegramToken)
 
-	fmt.Print("Enter Restricted Telegram User ID (Optional, press Enter for none): ")
-	fmt.Scanln(&cfg.TelegramAllowedUser)
-
-	fmt.Print("Choose LLM Provider (openrouter, ollama, openai, anthropic) [openrouter]: ")
-	fmt.Scanln(&cfg.ProviderType)
-	if cfg.ProviderType == "" {
-		cfg.ProviderType = "openrouter"
+	// Load existing if possible
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.AppConfig{}
 	}
 
+	cfg.TelegramToken = promptWithDefault("Enter Telegram Bot Token", cfg.TelegramToken)
+	cfg.TelegramAllowedUser = promptWithDefault("Enter Restricted Telegram User ID (Optional)", cfg.TelegramAllowedUser)
+
+	providerOptions := []string{"openrouter", "ollama", "openai", "anthropic"}
+	cfg.ProviderType = selectOption("Choose LLM Provider", providerOptions, cfg.ProviderType)
+
 	if cfg.ProviderType == "ollama" {
-		fmt.Print("Enter Ollama Model (e.g. llama3.2) [llama3.2]: ")
-		fmt.Scanln(&cfg.ProviderModel)
-		if cfg.ProviderModel == "" {
-			cfg.ProviderModel = "llama3.2"
-		}
+		cfg.ProviderModel = promptWithDefault("Enter Ollama Model (e.g. llama3.2)", cfg.ProviderModel)
 	} else {
-		fmt.Printf("Enter %s API Key: ", cfg.ProviderType)
-		fmt.Scanln(&cfg.ProviderAPIKey)
-		
-		fmt.Print("Enter Model Name (e.g. gpt-4o-mini) [gpt-4o-mini]: ")
-		fmt.Scanln(&cfg.ProviderModel)
-		if cfg.ProviderModel == "" {
-			cfg.ProviderModel = "gpt-4o-mini"
+		cfg.ProviderAPIKey = promptWithDefault(fmt.Sprintf("Enter %s API Key", cfg.ProviderType), cfg.ProviderAPIKey)
+		cfg.ProviderModel = promptWithDefault("Enter Model Name (e.g. gpt-4o-mini)", cfg.ProviderModel)
+	}
+
+	transcriberOptions := []string{"groq", "openai", "whisper-cli", "none"}
+	cfg.TranscriptionProvider = selectOption("Choose Transcription Provider", transcriberOptions, cfg.TranscriptionProvider)
+
+	if cfg.TranscriptionProvider != "none" {
+		if cfg.TranscriptionProvider == "openai" {
+			cfg.TranscriptionBaseURL = promptWithDefault("Enter OpenAI/Local Whisper Base URL (e.g. http://localhost:8080/v1)", cfg.TranscriptionBaseURL)
+			if cfg.TranscriptionBaseURL == "" {
+				cfg.TranscriptionBaseURL = "http://localhost:8080/v1"
+			}
+		}
+
+		if cfg.TranscriptionProvider == "openai" || cfg.TranscriptionProvider == "whisper-cli" {
+			cfg.TranscriptionModel = promptWithDefault("Enter Whisper Model (e.g. whisper-1, base, small)", cfg.TranscriptionModel)
+			if cfg.TranscriptionModel == "" {
+				cfg.TranscriptionModel = "small"
+			}
+		}
+
+		if cfg.TranscriptionProvider != "whisper-cli" {
+			cfg.TranscriptionAPIKey = promptWithDefault(fmt.Sprintf("Enter %s API Key", cfg.TranscriptionProvider), cfg.TranscriptionAPIKey)
 		}
 	}
 
@@ -80,10 +126,16 @@ func runConfigure() {
 		_, err := provider.Chat(ctx, req)
 		if err != nil {
 			fmt.Printf("❌ Failed to verify provider: %v\n", err)
-			fmt.Println("Please check your API key/Host and try again.")
-			return
+			fmt.Print("⚠️  Do you want to save the configuration anyway? (y/N): ")
+			var confirmSave string
+			fmt.Scanln(&confirmSave)
+			if confirmSave != "y" && confirmSave != "Y" {
+				fmt.Println("Configuration not saved.")
+				return
+			}
+		} else {
+			fmt.Println("✅ Connection successful!")
 		}
-		fmt.Println("✅ Connection successful!")
 	} else {
 		fmt.Println("⚠️ Unknown provider type, saving config without verification.")
 	}
@@ -235,6 +287,23 @@ func main() {
 
 	// Initialize the Telegram Channel
 	tgChannel := telegram.NewChannel(tgToken, allowedUsers, msgBus)
+
+	// Initialize Transcription Provider if configured
+	if cfg != nil {
+		if cfg.TranscriptionProvider == "groq" {
+			log.Printf("🎙️ Initializing Groq transcription provider")
+			groqTranscriber := providers.NewGroqTranscriptionProvider(cfg.TranscriptionAPIKey)
+			tgChannel.SetTranscriptionProvider(groqTranscriber)
+		} else if cfg.TranscriptionProvider == "openai" {
+			log.Printf("🎙️ Initializing OpenAI/Local transcription provider")
+			oaTranscriber := providers.NewOpenAITranscriptionProvider(cfg.TranscriptionBaseURL, cfg.TranscriptionAPIKey, cfg.TranscriptionModel)
+			tgChannel.SetTranscriptionProvider(oaTranscriber)
+		} else if cfg.TranscriptionProvider == "whisper-cli" {
+			log.Printf("🎙️ Initializing Whisper CLI transcription provider")
+			cliTranscriber := providers.NewWhisperCLITranscriptionProvider(cfg.TranscriptionModel)
+			tgChannel.SetTranscriptionProvider(cliTranscriber)
+		}
+	}
 
 	// Initialize the Background Heartbeat (Memory Janitor & Cron)
 	// Setting interval to 30 seconds for easy testing. In production, this should be ~30 minutes.

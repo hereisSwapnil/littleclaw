@@ -14,6 +14,10 @@ type AppConfig struct {
 	ProviderType        string `json:"provider_type"`   // e.g. "openrouter", "ollama", "openai"
 	ProviderModel       string `json:"provider_model"`  // e.g. "gpt-4o-mini", "llama3.2"
 	ProviderAPIKey      string `json:"provider_apikey"` // (Empty for local Ollama)
+	TranscriptionProvider string `json:"transcription_provider"` // e.g. "groq", "openai"
+	TranscriptionAPIKey   string `json:"transcription_apikey"`
+	TranscriptionBaseURL  string `json:"transcription_baseurl"`
+	TranscriptionModel    string `json:"transcription_model"`
 }
 
 // getConfigPath returns the absolute path to ~/.littleclaw/config.json
