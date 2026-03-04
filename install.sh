@@ -42,24 +42,36 @@ mv littleclaw "$INSTALL_DIR/"
 # Make sure it's executable
 chmod +x "$INSTALL_DIR/littleclaw"
 
-# Add to PATH temporarily for the script, suggest user to add it permanently if missing.
-export PATH="$INSTALL_DIR:$PATH"
+# Detect shell and update PATH if necessary
+SHELL_RC=""
+if [ -n "$ZSH_VERSION" ] || [[ "$SHELL" == *"zsh"* ]]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -n "$BASH_VERSION" ] || [[ "$SHELL" == *"bash"* ]]; then
+    SHELL_RC="$HOME/.bashrc"
+    if [ "$(uname)" = "Darwin" ]; then
+        # Mac OS default bash profile
+        SHELL_RC="$HOME/.bash_profile"
+    fi
+fi
+
+if [ -n "$SHELL_RC" ]; then
+    if ! grep -q "$INSTALL_DIR" "$SHELL_RC"; then
+        echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_RC"
+        echo "✅ Added $INSTALL_DIR to your PATH in $SHELL_RC"
+        echo "⚠️  Please run 'source $SHELL_RC' or restart your terminal to use littleclaw."
+    else
+        echo "✅ $INSTALL_DIR is already in your $SHELL_RC"
+    fi
+else
+    echo "⚠️  Could not detect shell configuration."
+    echo "Please manually add $INSTALL_DIR to your PATH."
+fi
 
 echo ""
 echo "✅ Littleclaw successfully installed!"
 echo ""
-
-if ! command -v littleclaw &> /dev/null; then
-    echo "⚠️  Note: '$INSTALL_DIR' is not in your PATH."
-    echo "Please add the following line to your ~/.bashrc or ~/.zshrc:"
-    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-    echo "Then restart your terminal."
-else
-    echo "🦀 You can now run the setup wizard to configure the agent:"
-    echo "  littleclaw configure"
-fi
-
+echo "🦀 You can now run the setup wizard to configure the agent:"
+echo "  littleclaw configure"
 echo ""
 echo "For more help, run:"
 echo "  littleclaw help"
