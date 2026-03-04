@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"littleclaw/pkg/bus"
 	"littleclaw/pkg/memory"
@@ -65,6 +66,9 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 
 // RunAgentLoop processes an incoming user message through a multi-step reasoning loop.
 func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
+	// Update heartbeat so there's always a "last active" timestamp
+	_ = c.memoryStore.UpdateHeartbeat()
+
 	// If this is a real user message, track it for background task context
 	if msg.ChatID != "internal_memory" && msg.ChatID != "" {
 		c.lastChatID = msg.ChatID
@@ -207,8 +211,14 @@ func (c *NanoCore) buildSystemPrompt() string {
 	builder.WriteString("CRITICAL: To manage your memory and knowledge, you MUST solely use the `update_core_memory`, `list_entities`, `read_entity`, and `write_entity` tools. DO NOT use the `write_file` or `append_file` tool to create memory or entity files.\n")
 	builder.WriteString("CRITICAL: If you need to make HTTP requests to external APIs, you MUST use the `exec` tool to run `curl` commands. You absolutely have the capability to fetch from the internet this way.\n\n")
 
-	// Inject Hyper-Personalized Memory
+	// Inject identity + personalized memory
 	builder.WriteString(c.memoryStore.BuildContext())
+
+	// Inject cron job run summaries so the agent knows what ran and when
+	if summary := c.buildCronSummary(); summary != "" {
+		builder.WriteString("\n\n## Scheduled Tasks — Recent Run Status\n\n")
+		builder.WriteString(summary)
+	}
 
 	// Inject Short-Term Conversation Context
 	recentHistory := c.memoryStore.ReadRecentHistory(4000) // ~1000 tokens of history
@@ -219,6 +229,44 @@ func (c *NanoCore) buildSystemPrompt() string {
 	}
 
 	return builder.String()
+}
+
+// buildCronSummary returns a compact text block describing all cron jobs and their last run.
+func (c *NanoCore) buildCronSummary() string {
+	jobs := c.cronService.ListJobs()
+	if len(jobs) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	for _, j := range jobs {
+		statusEmoji := "⏳"
+		if j.State.LastStatus == "ok" {
+			statusEmoji = "✅"
+		} else if j.State.LastStatus == "error" {
+			statusEmoji = "❌"
+		}
+
+		lastRun := "never"
+		if j.State.LastRunAtMs > 0 {
+			lastRun = time.UnixMilli(j.State.LastRunAtMs).Format("2006-01-02 15:04 MST")
+		}
+		nextRun := "unknown"
+		if j.State.NextRunAtMs > 0 {
+			nextRun = time.UnixMilli(j.State.NextRunAtMs).Format("2006-01-02 15:04 MST")
+		}
+
+		sb.WriteString(fmt.Sprintf("- %s **%s** (ID: %s)\n", statusEmoji, j.Label, j.ID))
+		sb.WriteString(fmt.Sprintf("  Schedule: %s | Last run: %s | Next run: %s", j.Schedule, lastRun, nextRun))
+		if j.State.LastDurationMs > 0 {
+			sb.WriteString(fmt.Sprintf(" | Duration: %dms", j.State.LastDurationMs))
+		}
+		if j.State.ConsecutiveErrors > 0 {
+			sb.WriteString(fmt.Sprintf(" | ⚠️ %d consecutive error(s): %s", j.State.ConsecutiveErrors, j.State.LastError))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func (c *NanoCore) sendResponse(chatID string, replyToMessageID int, channel, content string, files []string) {
@@ -478,7 +526,7 @@ func (c *NanoCore) registerCronTools() {
 			Parameters  map[string]interface{} `json:"parameters"`
 		}{
 			Name:        "list_cron",
-			Description: "List all currently scheduled cron jobs, including their IDs, labels, and schedules.",
+			Description: "List all currently scheduled cron jobs, including their IDs, labels, schedules, last-run time, status, duration, and next scheduled run.",
 			Parameters: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -490,11 +538,44 @@ func (c *NanoCore) registerCronTools() {
 			return &tools.ToolResult{ForLLM: "No cron jobs are currently scheduled."}
 		}
 
-		result := "Scheduled cron jobs:\n"
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%d scheduled cron job(s):\n\n", len(jobs)))
 		for _, j := range jobs {
-			result += fmt.Sprintf("- ID: %s | Label: %s | Schedule: %s | Command: %s\n", j.ID, j.Label, j.Schedule, j.Command)
+			statusEmoji := "⏳ never run"
+			if j.State.LastStatus == "ok" {
+				statusEmoji = "✅ ok"
+			} else if j.State.LastStatus == "error" {
+				statusEmoji = "❌ error"
+			}
+
+			lastRun := "never"
+			if j.State.LastRunAtMs > 0 {
+				lastRun = time.UnixMilli(j.State.LastRunAtMs).Format("2006-01-02 15:04:05")
+			}
+			nextRun := "unknown"
+			if j.State.NextRunAtMs > 0 {
+				nextRun = time.UnixMilli(j.State.NextRunAtMs).Format("2006-01-02 15:04:05")
+			}
+
+			sb.WriteString(fmt.Sprintf("**%s** (ID: `%s`)\n", j.Label, j.ID))
+			sb.WriteString(fmt.Sprintf("  Schedule:  %s\n", j.Schedule))
+			sb.WriteString(fmt.Sprintf("  Command:   %s\n", j.Command))
+			sb.WriteString(fmt.Sprintf("  Status:    %s\n", statusEmoji))
+			sb.WriteString(fmt.Sprintf("  Last run:  %s", lastRun))
+			if j.State.LastDurationMs > 0 {
+				sb.WriteString(fmt.Sprintf(" (%dms)", j.State.LastDurationMs))
+			}
+			sb.WriteString("\n")
+			sb.WriteString(fmt.Sprintf("  Next run:  %s\n", nextRun))
+			if j.State.ConsecutiveErrors > 0 {
+				sb.WriteString(fmt.Sprintf("  ⚠️  %d consecutive error(s) — last: %s\n", j.State.ConsecutiveErrors, j.State.LastError))
+			}
+			if j.Once {
+				sb.WriteString("  One-time: yes (removed after first run)\n")
+			}
+			sb.WriteString("\n")
 		}
-		return &tools.ToolResult{ForLLM: result}
+		return &tools.ToolResult{ForLLM: sb.String()}
 	})
 }
 
