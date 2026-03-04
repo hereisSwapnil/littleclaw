@@ -33,10 +33,11 @@ type NanoCore struct {
 	cronService  *CronService
 	lastChatID   string
 	lastChannel  string
+	tavilyAPIKey string
 }
 
 // NewNanoCore initializes the main agent brain.
-func NewNanoCore(provider providers.Provider, providerType, modelName, workspace string, msgBus *bus.MessageBus) (*NanoCore, error) {
+func NewNanoCore(provider providers.Provider, providerType, modelName, workspace string, msgBus *bus.MessageBus, tavilyAPIKey string) (*NanoCore, error) {
 	memStore, err := memory.NewStore(workspace)
 	if err != nil {
 		return nil, fmt.Errorf("memory init failed: %w", err)
@@ -52,17 +53,17 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 		providerType: providerType,
 		modelName:    modelName,
 		cronService:  cronSvc,
+		tavilyAPIKey: tavilyAPIKey,
 	}
 
 	// Initialize registry
-	nc.toolRegistry = tools.NewRegistry(workspace, memStore)
+	nc.toolRegistry = tools.NewRegistry(workspace, memStore, tavilyAPIKey)
 
 	nc.registerMemoryTools()
 	nc.registerCronTools()
 
 	return nc, nil
 }
-
 
 // RunAgentLoop processes an incoming user message through a multi-step reasoning loop.
 func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
@@ -170,7 +171,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 						}
 						historyMsg += fmt.Sprintf("[Attached files: %s]", strings.Join(result.Files, ", "))
 					}
-					
+
 					if msg.Channel == "internal" {
 						c.memoryStore.AppendInternal("ASSISTANT", historyMsg)
 					} else {
@@ -198,7 +199,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 		}
 		break
 	}
-	
+
 	if iteration >= maxIterations {
 		c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, "⚠ Reached maximum inference iterations.", nil)
 	}
@@ -206,27 +207,35 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 func (c *NanoCore) buildSystemPrompt() string {
 	var builder strings.Builder
+	// FORMATTING RULE must come first so the LLM sees it before anything else
+	builder.WriteString("=== OUTPUT FORMAT RULE (MANDATORY) ===\n")
+	builder.WriteString("You send messages over Telegram. Telegram does NOT render markdown syntax.\n")
+	builder.WriteString("BANNED: ** (bold), __ (bold), # ## ### (headers), --- (dividers), _italic_.\n")
+	builder.WriteString("BANNED: * bullet points. Use - instead.\n")
+	builder.WriteString("BAD EXAMPLE: **Profile** | ## Skills | --- dividers | *emphasis*\n")
+	builder.WriteString("GOOD EXAMPLE: Profile | Skills: | plain dashes for lists | CAPS for emphasis\n")
+	builder.WriteString("ALWAYS write in plain text. Emoji are fine. Backticks for inline code are fine.\n")
+	builder.WriteString("======================================\n\n")
 	builder.WriteString("You are Littleclaw, an ultra-fast, deeply personalized AI agent.\n")
 	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
-	builder.WriteString("FORMATTING: Your responses are delivered over Telegram which does NOT render markdown. NEVER use ** for bold, ## for headers, or * for bullet points. Use plain text only. For lists, use a dash (-) or emoji bullet. For emphasis, use CAPS or emoji. For code snippets, use backtick blocks sparingly.\n")
-	builder.WriteString("CRITICAL: To manage your memory and knowledge, you MUST solely use the `update_core_memory`, `list_entities`, `read_entity`, and `write_entity` tools. DO NOT use the `write_file` or `append_file` tool to create memory or entity files.\n")
-	builder.WriteString("CRITICAL: If you need to make HTTP requests to external APIs, you MUST use the `exec` tool to run `curl` commands. You absolutely have the capability to fetch from the internet this way.\n\n")
+	builder.WriteString("MEMORY: Use `update_core_memory`, `list_entities`, `read_entity`, `write_entity` tools only — never write_file/append_file for memory.\n")
+	builder.WriteString("WEB: Use `web_search` and `web_fetch` tools for real-time internet access.\n")
 
 	// Inject identity + personalized memory
 	builder.WriteString(c.memoryStore.BuildContext())
 
 	// Inject cron job run summaries so the agent knows what ran and when
 	if summary := c.buildCronSummary(); summary != "" {
-		builder.WriteString("\n\n## Scheduled Tasks — Recent Run Status\n\n")
+		builder.WriteString("\nScheduled Tasks - Recent Run Status:\n")
 		builder.WriteString(summary)
 	}
 
 	// Inject Short-Term Conversation Context
 	recentHistory := c.memoryStore.ReadRecentHistory(4000) // ~1000 tokens of history
 	if recentHistory != "" {
-		builder.WriteString("\n\n## Recent Conversational History\n\n")
+		builder.WriteString("\nRecent Conversational History:\n")
 		builder.WriteString(recentHistory)
-		builder.WriteString("\n\n(Note: The above is the recent conversation log. Use it to understand references like 'that file' or 'send it again'.)\n")
+		builder.WriteString("\n(Use this to understand references like 'that file' or 'send it again'.)\n")
 	}
 
 	return builder.String()
@@ -308,7 +317,7 @@ func (c *NanoCore) registerMemoryTools() {
 		if !ok {
 			return &tools.ToolResult{ForLLM: "Error: content must be a string"}
 		}
-		
+
 		if err := c.memoryStore.WriteLongTerm(content); err != nil {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error updating core memory: %v", err)}
 		}
@@ -341,7 +350,7 @@ func (c *NanoCore) registerMemoryTools() {
 		if !ok {
 			return &tools.ToolResult{ForLLM: "Error: entity_name must be a string"}
 		}
-		
+
 		data := c.memoryStore.ReadEntity(name)
 		if data == "" {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("No existing record found for entity: %s", name)}
@@ -380,7 +389,7 @@ func (c *NanoCore) registerMemoryTools() {
 		if !okName || !okContent {
 			return &tools.ToolResult{ForLLM: "Error: entity_name and content must be strings"}
 		}
-		
+
 		if err := c.memoryStore.WriteEntity(name, content); err != nil {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error writing entity: %v", err)}
 		}
@@ -469,7 +478,7 @@ func (c *NanoCore) registerCronTools() {
 		}
 
 		return &tools.ToolResult{
-			ForLLM:  fmt.Sprintf("Cron job '%s' scheduled successfully (ID: %s, schedule: %s).", label, job.ID, schedule),
+			ForLLM: fmt.Sprintf("Cron job '%s' scheduled successfully (ID: %s, schedule: %s).", label, job.ID, schedule),
 		}
 	})
 
@@ -579,4 +588,3 @@ func (c *NanoCore) registerCronTools() {
 		return &tools.ToolResult{ForLLM: sb.String()}
 	})
 }
-

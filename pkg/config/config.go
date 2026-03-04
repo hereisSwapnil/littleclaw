@@ -9,15 +9,16 @@ import (
 
 // AppConfig holds the user's permanent API keys and model preferences.
 type AppConfig struct {
-	TelegramToken       string `json:"telegram_token"`
-	TelegramAllowedUser string `json:"telegram_allowed_user"`
-	ProviderType        string `json:"provider_type"`   // e.g. "openrouter", "ollama", "openai"
-	ProviderModel       string `json:"provider_model"`  // e.g. "gpt-4o-mini", "llama3.2"
-	ProviderAPIKey      string `json:"provider_apikey"` // (Empty for local Ollama)
+	TelegramToken         string `json:"telegram_token"`
+	TelegramAllowedUser   string `json:"telegram_allowed_user"`
+	ProviderType          string `json:"provider_type"`          // e.g. "openrouter", "ollama", "openai"
+	ProviderModel         string `json:"provider_model"`         // e.g. "gpt-4o-mini", "llama3.2"
+	ProviderAPIKey        string `json:"provider_apikey"`        // (Empty for local Ollama)
 	TranscriptionProvider string `json:"transcription_provider"` // e.g. "groq", "openai"
 	TranscriptionAPIKey   string `json:"transcription_apikey"`
 	TranscriptionBaseURL  string `json:"transcription_baseurl"`
 	TranscriptionModel    string `json:"transcription_model"`
+	TavilyAPIKey          string `json:"tavily_apikey"` // Optional: Tavily Search API key for web_search tool
 }
 
 // getConfigPath returns the absolute path to ~/.littleclaw/config.json
@@ -73,6 +74,6 @@ func (cfg *AppConfig) Save() error {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config to disk: %w", err)
 	}
-	
+
 	return nil
 }

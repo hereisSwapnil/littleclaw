@@ -114,8 +114,12 @@ func runConfigure() {
 		}
 	}
 
+	fmt.Println("")
+	fmt.Println("--- Web Search (Optional) ---")
+	cfg.TavilyAPIKey = promptWithDefault("Enter Tavily Search API Key (leave blank to skip)", cfg.TavilyAPIKey)
+
 	fmt.Println("\n🔍 Testing Provider Connection...")
-	
+
 	// Create temporary provider to verify settings before saving
 	var provider providers.Provider
 	if cfg.ProviderType == "ollama" {
@@ -128,14 +132,14 @@ func runConfigure() {
 
 	if provider != nil {
 		req := providers.ChatRequest{
-			Model: cfg.ProviderModel,
-			Messages: []providers.Message{ {Role: "user", Content: "Say 'OK' if you can read this."} },
+			Model:     cfg.ProviderModel,
+			Messages:  []providers.Message{{Role: "user", Content: "Say 'OK' if you can read this."}},
 			MaxTokens: 10,
 		}
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		
+
 		_, err := provider.Chat(ctx, req)
 		if err != nil {
 			fmt.Printf("❌ Failed to verify provider: %v\n", err)
@@ -156,7 +160,7 @@ func runConfigure() {
 	if err := cfg.Save(); err != nil {
 		log.Fatalf("❌ Failed to save config: %v", err)
 	}
-	
+
 	fmt.Println("✅ Configuration saved successfully to ~/.littleclaw/config.json!")
 	fmt.Println("You can now run 'go run cmd/littleclaw/main.go' to start the agent.")
 }
@@ -179,7 +183,7 @@ func runReset() {
 	if err := os.RemoveAll(workspaceDir); err != nil {
 		log.Fatalf("❌ Failed to reset workspace: %v", err)
 	}
-	
+
 	fmt.Println("✅ Littleclaw workspace has been successfully reset!")
 }
 
@@ -238,7 +242,7 @@ func main() {
 		if providerType == "ollama" {
 			modelName = os.Getenv("OLLAMA_MODEL")
 			if modelName == "" {
-				modelName = "llama3.2" 
+				modelName = "llama3.2"
 			}
 		} else {
 			providerAPIKey = os.Getenv("OPENROUTER_API_KEY")
@@ -265,9 +269,9 @@ func main() {
 			log.Println("⚠️ Missing API keys! Please run 'go run cmd/littleclaw/main.go configure'")
 			log.Fatal("Exiting due to missing configuration.")
 		}
-		
+
 		log.Printf("🤖 Initializing %s provider", providerType)
-		
+
 		baseURL := "https://openrouter.ai/api/v1"
 		if providerType == "openai" {
 			baseURL = "https://api.openai.com/v1"
@@ -293,8 +297,14 @@ func main() {
 	// 3. Initialize Core Infrastructure
 	msgBus := bus.NewMessageBus()
 
+	// Collect optional feature keys
+	tavilyAPIKey := ""
+	if cfg != nil {
+		tavilyAPIKey = cfg.TavilyAPIKey
+	}
+
 	// Initialize the NanoCore Agent Loop
-	nanoCore, err := agent.NewNanoCore(provider, providerType, modelName, workspace, msgBus)
+	nanoCore, err := agent.NewNanoCore(provider, providerType, modelName, workspace, msgBus, tavilyAPIKey)
 	if err != nil {
 		log.Fatalf("Failed to initialize Agent Core: %v", err)
 	}

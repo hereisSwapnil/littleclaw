@@ -26,25 +26,30 @@ type Handler func(ctx context.Context, args map[string]interface{}) *ToolResult
 type Registry struct {
 	workspaceDir string
 	memoryStore  *memory.Store // Optional reference to memory store
+	tavilyAPIKey string        // Optional Tavily API key for web_search
 	definitions  []providers.ToolDefinition
 	handlers     map[string]Handler
 }
 
 // NewRegistry initializes a tool registry configured for the given workspace.
-func NewRegistry(workspaceDir string, mem *memory.Store) *Registry {
+func NewRegistry(workspaceDir string, mem *memory.Store, tavilyAPIKey string) *Registry {
 	r := &Registry{
 		workspaceDir: workspaceDir,
 		memoryStore:  mem,
+		tavilyAPIKey: tavilyAPIKey,
 		definitions:  []providers.ToolDefinition{},
 		handlers:     make(map[string]Handler),
 	}
 
 	// Register default sandbox tools
 	r.registerCoreTools()
-	
+
+	// Register web tools (web_fetch always available; web_search needs Tavily key)
+	r.registerWebTools()
+
 	// Load dynamic skills
 	r.loadSkills()
-	
+
 	return r
 }
 
@@ -65,7 +70,7 @@ func (r *Registry) loadSkills() {
 		if entry.IsDir() {
 			continue
 		}
-		
+
 		name := entry.Name()
 		// Only load .sh and .py files
 		if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".py") {
@@ -94,7 +99,7 @@ func (r *Registry) loadSkills() {
 		// Create handler
 		handler := func(ctx context.Context, args map[string]interface{}) *ToolResult {
 			cmdArgsStr, _ := args["args"].(string)
-			
+
 			// Simple split by space for args (a more robust parser might handle quotes)
 			var cmdArgs []string
 			if cmdArgsStr != "" {
@@ -118,7 +123,7 @@ func (r *Registry) loadSkills() {
 			}
 
 			return &ToolResult{
-				ForLLM:  string(output),
+				ForLLM: string(output),
 			}
 		}
 
@@ -204,7 +209,7 @@ func (r *Registry) registerCoreTools() {
 		if !ok {
 			return &ToolResult{ForLLM: "Error: path must be a string"}
 		}
-		
+
 		safePath, err := r.resolveWorkspacePath(p)
 		if err != nil {
 			return &ToolResult{ForLLM: err.Error()}
@@ -245,11 +250,11 @@ func (r *Registry) registerCoreTools() {
 	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
 		p, okPath := args["path"].(string)
 		content, okContent := args["content"].(string)
-		
+
 		if !okPath || !okContent {
 			return &ToolResult{ForLLM: "Error: path and content must be strings"}
 		}
-		
+
 		safePath, err := r.resolveWorkspacePath(p)
 		if err != nil {
 			return &ToolResult{ForLLM: err.Error()}
@@ -294,11 +299,11 @@ func (r *Registry) registerCoreTools() {
 	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
 		p, okPath := args["path"].(string)
 		content, okContent := args["content"].(string)
-		
+
 		if !okPath || !okContent {
 			return &ToolResult{ForLLM: "Error: path and content must be strings"}
 		}
-		
+
 		safePath, err := r.resolveWorkspacePath(p)
 		if err != nil {
 			return &ToolResult{ForLLM: err.Error()}
@@ -351,7 +356,7 @@ func (r *Registry) registerCoreTools() {
 		if !ok {
 			return &ToolResult{ForLLM: "Error: path must be a string"}
 		}
-		
+
 		safePath, err := r.resolveWorkspacePath(p)
 		if err != nil {
 			return &ToolResult{ForLLM: err.Error()}
