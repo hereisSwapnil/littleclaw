@@ -12,63 +12,97 @@
 
 ## The Lightweight, Hyper-Personalized AI Nano-Agent
 
-Littleclaw is a hyper-personalized, context-aware AI running on a deterministically scheduled core. It utilizes a ReAct pattern nano-agent, event-driven message bus, and deep integration with the local OS to effectively become an autonomous digital entity.
+Littleclaw is a hyper-personalized, context-aware AI running on a deterministically scheduled core. It uses a ReAct-pattern nano-agent, event-driven message bus, and deep integration with the local OS to effectively become an autonomous digital entity — controlled entirely through Telegram.
 
 ### ✨ Key Features
 
-- **Multi-layered Memory Architecture**: Seamlessly reads and updates `CRON.json`, `HISTORY.md`, `MEMORY.md`, and dynamic entities so it never forgets context across sessions.
-- **Dynamic Skills & Tools**: Sandbox-integrated tool loader that dynamically loads shell scripts, Python, or Go binaries from the `skills/` directory at runtime.
-- **Deterministic Background Cron**: Unbreakable schedule daemon replacing volatile swarm logic. Background loops run on `@every` definitions with robust state serialization.
-- **Local & Cloud Provider Support**: Use large models via OpenAI/OpenRouter, or seamlessly switch to a local Ollama service for 100% offline edge execution.
-- **Event-Driven Bus**: Native bidirectional bus, fully integrated with Telegram and local processing nodes for instantaneous background task notification.
+- **Multi-layered Memory Architecture** — Persistent `MEMORY.md` for core facts, `HISTORY.md` for conversation, `INTERNAL.md` for background reasoning, and per-entity knowledge files. Auto-consolidates context via a background heartbeat.
+- **Workspace Identity Files** — `SOUL.md`, `IDENTITY.md`, and `USER.md` scaffolded automatically on first boot. The agent reads these on every call, giving it a persistent personality and knowledge of the user across restarts.
+- **Cron with Full Run History** — Schedule recurring tasks with `@every` expressions or cron syntax. Every run is logged to `cron/runs/<jobID>.jsonl` with status (`ok`/`error`), duration, next-run time, and consecutive error count — mirroring how openclaw tracks jobs.
+- **Web Search & Fetch** — Built-in `web_search` (Tavily primary → DuckDuckGo fallback, no key needed) and `web_fetch` (reads any URL) tools for real-time internet access. No `curl` hacks required.
+- **Dynamic Skills** — Drop `.sh` or `.py` scripts into the `skills/` directory and they become callable tools instantly (use `reload_skills` to hot-reload).
+- **Local & Cloud LLMs** — OpenAI, OpenRouter, or a fully offline Ollama instance. Switch via `littleclaw configure`.
+- **Voice Messages** — Transcribe Telegram voice notes via Groq, OpenAI Whisper, or a local Whisper CLI.
 
 ### 🚀 Quick Start
 
 #### Requirements
 - Go 1.21+
-- [Ollama](https://ollama.ai/) (optional for local ML models)
+- [Ollama](https://ollama.ai/) (optional, for local/offline models)
 
 #### Installation
 
-**Fastest Way (Linux / macOS)**
-Run the automated installation script to clone, build, and install Littleclaw instantly:
+**One-liner (Linux / macOS)**
 ```bash
 curl -sSL https://raw.githubusercontent.com/hereisswapnil/littleclaw/main/install.sh | bash
 ```
 
-**Manual Approach**
-If you prefer to install manually, clone the repository, build, and configure the project.
-
+**Manual build**
 ```bash
-# Build the binary
+git clone https://github.com/hereisswapnil/littleclaw.git
+cd littleclaw
 go build -o bin/littleclaw ./cmd/littleclaw/...
 ```
 
-#### First Time Setup
-Run the interactive setup configuration to initialize settings:
+#### First-time Setup
+
 ```bash
 littleclaw configure
 ```
 
-You'll be guided through selecting your preferred LLM provider, entering API keys (or picking local Ollama), and setting up your Telegram communication endpoints.
+The interactive wizard walks you through:
+- Telegram bot token and allowed user ID
+- LLM provider (OpenAI / OpenRouter / Ollama) and model name
+- Transcription provider (Groq / OpenAI Whisper / local Whisper CLI / none)
+- Tavily API key for web search (optional — DuckDuckGo is used automatically if omitted)
 
-#### Usage
+#### Running
 
-To boot up the Littleclaw Heartbeat and Cron Daemon:
 ```bash
 ./bin/littleclaw
 ```
 
-Once running, send a message to your configured Telegram bot to start interacting. 
+Then message your Telegram bot to start. The agent boots with cron scheduling, background memory consolidation (heartbeat), and live web access ready to go.
 
-### 🧹 Advanced Settings
-If you want to clear Littleclaw's memory and history completely to start fresh:
+### 💬 Example Prompts
+
+- *"Remind me to drink water every hour"*
+- *"Remember that I'm allergic to peanuts"*
+- *"Search the web for the latest Go 1.25 release notes"*
+- *"Fetch this URL and summarize it: https://..."*
+- *"Show me all my scheduled tasks"*
+- *"Create a Python script that does X and run it every day at 9 AM"*
+
+### 🧹 Reset
+
+To wipe all memory, history, entities, and workspace files and start fresh:
 ```bash
 ./bin/littleclaw reset
 ```
 
+### 📁 Workspace Layout
+
+After first boot, `~/.littleclaw/workspace/` contains:
+
+```
+workspace/
+├── SOUL.md          # Agent personality & behavioral rules
+├── IDENTITY.md      # Agent name, capabilities, purpose
+├── USER.md          # What the agent knows about you (grows over time)
+├── HEARTBEAT.md     # Last-active timestamp (updated every loop)
+├── CRON.json        # Scheduled jobs with state (lastRun, nextRun, status)
+├── cron/runs/       # Per-job JSONL run logs
+├── memory/
+│   ├── MEMORY.md    # Core long-term facts
+│   ├── HISTORY.md   # Conversation log (auto-rotates at 1 MB)
+│   ├── INTERNAL.md  # Background reasoning log
+│   └── ENTITIES/    # Deep knowledge files per person/project/topic
+└── skills/          # Drop .sh or .py scripts here to add new tools
+```
+
 ### 📜 License
-This project is licensed under the [MIT License](LICENSE).
+
+[MIT](LICENSE)
 
 ---
 
