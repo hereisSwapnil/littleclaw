@@ -30,14 +30,25 @@ Littleclaw is a hyper-personalized, context-aware AI running on a deterministica
 - [Ollama](https://ollama.ai/) (optional for local ML models)
 
 #### Installation
-Clone the repository, build, and configure the project.
+
+**Fastest Way (Linux / macOS)**
+Run the automated installation script to clone, build, and install Littleclaw instantly:
+```bash
+curl -sSL https://raw.githubusercontent.com/hereisswapnil/littleclaw/main/install.sh | bash
+```
+
+**Manual Approach**
+If you prefer to install manually, clone the repository, build, and configure the project.
 
 ```bash
 # Build the binary
 go build -o bin/littleclaw ./cmd/littleclaw/...
+```
 
-# Run the interactive setup configuration
-./bin/littleclaw configure
+#### First Time Setup
+Run the interactive setup configuration to initialize settings:
+```bash
+littleclaw configure
 ```
 
 You'll be guided through selecting your preferred LLM provider, entering API keys (or picking local Ollama), and setting up your Telegram communication endpoints.
