@@ -35,4 +35,4 @@ go.work.sum
 .DS_Store
 bin
 .env
-*.md
+/local

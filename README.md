@@ -5,7 +5,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hereisswapnil/littleclaw"><img src="https://img.shields.io/github/languages/top/hereisswapnil/littleclaw?color=00ADD8&style=flat-square&logo=go" alt="Language: Go"></a>
   <img src="https://img.shields.io/github/repo-size/hereisswapnil/littleclaw?style=flat-square" alt="Repo Size">
   <img src="https://img.shields.io/badge/Status-Active-success.svg?style=flat-square" alt="Status: Active">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
