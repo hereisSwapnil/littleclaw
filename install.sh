@@ -44,19 +44,29 @@ chmod +x "$INSTALL_DIR/littleclaw"
 
 # Detect shell and update PATH if necessary
 SHELL_RC=""
-if [ -n "$ZSH_VERSION" ] || [[ "$SHELL" == *"zsh"* ]]; then
+
+# When running via `curl | bash`, the script executes in bash even if the user's login shell is zsh.
+# Check the parent process or $SHELL environment variable to deduce the primary shell.
+USER_SHELL=$(basename "$SHELL")
+
+if [[ "$USER_SHELL" == "zsh" ]]; then
     SHELL_RC="$HOME/.zshrc"
-elif [ -n "$BASH_VERSION" ] || [[ "$SHELL" == *"bash"* ]]; then
+elif [[ "$USER_SHELL" == "bash" ]]; then
     SHELL_RC="$HOME/.bashrc"
     if [ "$(uname)" = "Darwin" ]; then
         # Mac OS default bash profile
         SHELL_RC="$HOME/.bash_profile"
     fi
+else
+    # Fallback to appending to profile
+    SHELL_RC="$HOME/.profile"
 fi
 
 if [ -n "$SHELL_RC" ]; then
-    if ! grep -q "$INSTALL_DIR" "$SHELL_RC"; then
-        echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_RC"
+    if ! grep -q "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
+        echo "" >> "$SHELL_RC"
+        echo "# Littleclaw Agent" >> "$SHELL_RC"
+        echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$SHELL_RC"
         echo "✅ Added $INSTALL_DIR to your PATH in $SHELL_RC"
         echo "⚠️  Please run 'source $SHELL_RC' or restart your terminal to use littleclaw."
     else
