@@ -373,6 +373,10 @@ func (c *NanoCore) registerCronTools() {
 						"type":        "string",
 						"description": "The shell command to run on each tick. Its stdout is sent to the user.",
 					},
+					"once": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Set to true if this task should only run once and then be removed. Useful for one-time reminders.",
+					},
 				},
 				"required": []string{"label", "schedule", "command"},
 			},
@@ -381,6 +385,7 @@ func (c *NanoCore) registerCronTools() {
 		label, _ := args["label"].(string)
 		schedule, _ := args["schedule"].(string)
 		command, _ := args["command"].(string)
+		once, _ := args["once"].(bool)
 
 		if label == "" || schedule == "" || command == "" {
 			return &tools.ToolResult{ForLLM: "Error: label, schedule, and command are all required."}
@@ -407,6 +412,7 @@ func (c *NanoCore) registerCronTools() {
 			Command:  command,
 			ChatID:   chatID,
 			Channel:  channel,
+			Once:     once,
 		}
 
 		if err := c.cronService.AddJob(job); err != nil {

@@ -24,6 +24,7 @@ type CronJob struct {
 	ChatID   string `json:"chat_id"`  // Telegram chat ID to reply to
 	Channel  string `json:"channel"`  // channel to respond on (e.g. "telegram")
 	Label    string `json:"label"`    // human-readable label shown to user
+	Once     bool   `json:"once"`     // if true, job is removed after one execution
 }
 
 // CronService manages persistent, file-backed cron jobs and runs them on schedule.
@@ -143,7 +144,20 @@ func (cs *CronService) schedule(job *CronJob) error {
 // runnerFor returns the function that executes the job and messages the user.
 func (cs *CronService) runnerFor(job *CronJob) func() {
 	return func() {
-		log.Printf("⏰ CronService: firing job %s (%s)\n", job.ID, job.Label)
+		// Verify job still exists (it might have been removed by a near-simultaneous tick for a one-time job)
+		cs.mu.Lock()
+		_, exists := cs.jobs[job.ID]
+		cs.mu.Unlock()
+		if !exists {
+			return
+		}
+
+		if job.Once {
+			log.Printf("⏰ CronService: firing one-time job %s, removing immediately\n", job.ID)
+			_ = cs.RemoveJob(job.ID)
+		} else {
+			log.Printf("⏰ CronService: firing job %s (%s)\n", job.ID, job.Label)
+		}
 
 		cmd := exec.Command("sh", "-c", job.Command)
 		cmd.Dir = cs.workspaceDir
