@@ -55,8 +55,21 @@ func selectOption(label string, options []string, defaultValue string) string {
 	return result
 }
 
+func printLogo() {
+	fmt.Println(`  _      _ _   _   _          _               `)
+	fmt.Println(` | |    (_) | | | | |        | |              `)
+	fmt.Println(` | |     _| |_| |_| | ___ ___| | __ ___      __`)
+	fmt.Println(" | |    | | __| __| |/ _ / __| |/ _` \\ \\ /\\ / /")
+	fmt.Println(` | |____| | |_| |_| |  __/ (__| | (_| \ V  V / `)
+	fmt.Println(` |______|_|\__|\__|_|\___|\___|_|\__,_|\_/\_/  `)
+	fmt.Println(``)
+	fmt.Println(`           🦀 The Nano-Agent 🦀                `)
+	fmt.Println(``)
+}
+
 func runConfigure() {
-	fmt.Println("🦐 Littleclaw Configuration Wizard")
+	printLogo()
+	fmt.Println("=== Configuration Wizard ===")
 	fmt.Println("---------------------------------")
 
 	// Load existing if possible
@@ -181,7 +194,8 @@ func main() {
 		}
 	}
 
-	fmt.Println("🦐 Starting Littleclaw Agent...")
+	printLogo()
+	fmt.Println("⚙️  Starting Littleclaw Core Systems...")
 
 	// 0. Try loading from Config File first
 	cfg, err := config.Load()
