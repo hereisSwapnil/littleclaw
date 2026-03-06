@@ -36,10 +36,10 @@ func NewStore(workspace string) (*Store, error) {
 		memoryFile:    filepath.Join(memoryDir, "MEMORY.md"),
 		historyFile:   filepath.Join(memoryDir, "HISTORY.md"),
 		internalFile:  filepath.Join(memoryDir, "INTERNAL.md"),
-		heartbeatFile: filepath.Join(workspace, "HEARTBEAT.md"),
-		soulFile:      filepath.Join(workspace, "SOUL.md"),
-		identityFile:  filepath.Join(workspace, "IDENTITY.md"),
-		userFile:      filepath.Join(workspace, "USER.md"),
+		heartbeatFile: filepath.Join(memoryDir, "HEARTBEAT.md"),
+		soulFile:      filepath.Join(memoryDir, "SOUL.md"),
+		identityFile:  filepath.Join(memoryDir, "IDENTITY.md"),
+		userFile:      filepath.Join(memoryDir, "USER.md"),
 	}
 
 	// Ensure directories exist

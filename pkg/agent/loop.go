@@ -12,6 +12,7 @@ import (
 	"littleclaw/pkg/memory"
 	"littleclaw/pkg/providers"
 	"littleclaw/pkg/tools"
+	"littleclaw/pkg/workspace"
 )
 
 type contextKey string
@@ -27,6 +28,7 @@ type NanoCore struct {
 	memoryStore  *memory.Store
 	toolRegistry *tools.Registry
 	msgBus       *bus.MessageBus
+	wsMgr        *workspace.Manager
 	workspace    string
 	providerType string
 	modelName    string
@@ -37,19 +39,25 @@ type NanoCore struct {
 }
 
 // NewNanoCore initializes the main agent brain.
-func NewNanoCore(provider providers.Provider, providerType, modelName, workspace string, msgBus *bus.MessageBus, tavilyAPIKey string) (*NanoCore, error) {
-	memStore, err := memory.NewStore(workspace)
+func NewNanoCore(provider providers.Provider, providerType, modelName, workspaceDir string, msgBus *bus.MessageBus, tavilyAPIKey string) (*NanoCore, error) {
+	memStore, err := memory.NewStore(workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("memory init failed: %w", err)
 	}
 
-	cronSvc := NewCronService(workspace, msgBus, memStore)
+	wsMgr, err := workspace.NewManager(workspaceDir)
+	if err != nil {
+		return nil, fmt.Errorf("workspace manager init failed: %w", err)
+	}
+
+	cronSvc := NewCronService(workspaceDir, msgBus, memStore)
 
 	nc := &NanoCore{
 		provider:     provider,
 		memoryStore:  memStore,
 		msgBus:       msgBus,
-		workspace:    workspace,
+		wsMgr:        wsMgr,
+		workspace:    workspaceDir,
 		providerType: providerType,
 		modelName:    modelName,
 		cronService:  cronSvc,
@@ -57,10 +65,11 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 	}
 
 	// Initialize registry
-	nc.toolRegistry = tools.NewRegistry(workspace, memStore, tavilyAPIKey)
+	nc.toolRegistry = tools.NewRegistry(workspaceDir, memStore, wsMgr, tavilyAPIKey)
 
 	nc.registerMemoryTools()
 	nc.registerCronTools()
+	nc.registerWorkspaceTools()
 
 	return nc, nil
 }
@@ -201,7 +210,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 	}
 
 	if iteration >= maxIterations {
-		c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, "⚠ Reached maximum inference iterations.", nil)
+		log.Printf("agent loop hit max iterations (%d) for chat %s", maxIterations, msg.ChatID)
 	}
 }
 
@@ -220,6 +229,19 @@ func (c *NanoCore) buildSystemPrompt() string {
 	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
 	builder.WriteString("MEMORY: Use `update_core_memory`, `list_entities`, `read_entity`, `write_entity` tools only — never write_file/append_file for memory.\n")
 	builder.WriteString("WEB: Use `web_search` and `web_fetch` tools for real-time internet access.\n")
+
+	// Workspace structure context
+	builder.WriteString("\n=== WORKSPACE STRUCTURE ===\n")
+	builder.WriteString("Your workspace is organized into structured folders. ALWAYS use the correct folder:\n")
+	builder.WriteString("- scripts/   : shell and Python automation scripts (tracked in scripts/tracker.json)\n")
+	builder.WriteString("- skills/    : executable scripts loaded as agent tools (tracked in skills/tracker.json)\n")
+	builder.WriteString("- tools/     : utility programs and helpers (tracked in tools/tracker.json)\n")
+	builder.WriteString("- memory/    : RESERVED — use memory tools only, never write_file here\n")
+	builder.WriteString("Any other folders are custom and created on demand. Use `list_workspace` to see them.\n")
+	builder.WriteString("Use `create_workspace_folder` to create a new folder for anything that needs its own space.\n")
+	builder.WriteString("When writing a script, ALWAYS put it in scripts/ or skills/. NEVER dump files in the workspace root.\n")
+	builder.WriteString("Use `track_item` to register scripts/tools with a description so you remember them later.\n")
+	builder.WriteString("===========================\n")
 
 	// Inject identity + personalized memory
 	builder.WriteString(c.memoryStore.BuildContext())

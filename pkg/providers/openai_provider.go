@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // OpenAIProvider is a generic provider for OpenAI-compatible APIs.
@@ -24,7 +25,7 @@ func NewOpenAIProvider(name, baseURL, apiKey string) *OpenAIProvider {
 		NameStr:    name,
 		BaseURL:    baseURL,
 		APIKey:     apiKey,
-		HTTPClient: &http.Client{},
+		HTTPClient: &http.Client{Timeout: 3 * time.Minute},
 	}
 }
 

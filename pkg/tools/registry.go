@@ -10,6 +10,7 @@ import (
 
 	"littleclaw/pkg/memory"
 	"littleclaw/pkg/providers"
+	"littleclaw/pkg/workspace"
 )
 
 // ToolResult represents the output of a tool execution.
@@ -25,17 +26,19 @@ type Handler func(ctx context.Context, args map[string]interface{}) *ToolResult
 // Registry holds the registered tools and their handlers.
 type Registry struct {
 	workspaceDir string
-	memoryStore  *memory.Store // Optional reference to memory store
-	tavilyAPIKey string        // Optional Tavily API key for web_search
+	memoryStore  *memory.Store      // Optional reference to memory store
+	wsMgr        *workspace.Manager // Structured workspace manager
+	tavilyAPIKey string             // Optional Tavily API key for web_search
 	definitions  []providers.ToolDefinition
 	handlers     map[string]Handler
 }
 
 // NewRegistry initializes a tool registry configured for the given workspace.
-func NewRegistry(workspaceDir string, mem *memory.Store, tavilyAPIKey string) *Registry {
+func NewRegistry(workspaceDir string, mem *memory.Store, wsMgr *workspace.Manager, tavilyAPIKey string) *Registry {
 	r := &Registry{
 		workspaceDir: workspaceDir,
 		memoryStore:  mem,
+		wsMgr:        wsMgr,
 		tavilyAPIKey: tavilyAPIKey,
 		definitions:  []providers.ToolDefinition{},
 		handlers:     make(map[string]Handler),
@@ -80,12 +83,22 @@ func (r *Registry) loadSkills() {
 		toolName := strings.TrimSuffix(name, filepath.Ext(name))
 		scriptPath := filepath.Join(skillsDir, name)
 
+		// Pull description from tracker if available
+		description := fmt.Sprintf("Dynamic skill: executes the %s script. Ensure to pass required arguments.", name)
+		if r.wsMgr != nil {
+			if t, err := r.wsMgr.ReadTracker("skills"); err == nil {
+				if item, ok := t.Items[toolName]; ok && item.Description != "" {
+					description = item.Description
+				}
+			}
+		}
+
 		// Define the tool
 		def := providers.ToolDefinition{
 			Type: "function",
 		}
 		def.Function.Name = toolName
-		def.Function.Description = fmt.Sprintf("Dynamic skill: executes the %s script. Ensure to pass required arguments.", name)
+		def.Function.Description = description
 		def.Function.Parameters = map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -95,6 +108,11 @@ func (r *Registry) loadSkills() {
 				},
 			},
 		}
+
+		// Capture loop vars for closure
+		capturedName := name
+		capturedToolName := toolName
+		capturedPath := scriptPath
 
 		// Create handler
 		handler := func(ctx context.Context, args map[string]interface{}) *ToolResult {
@@ -107,24 +125,28 @@ func (r *Registry) loadSkills() {
 			}
 
 			var cmd *exec.Cmd
-			if strings.HasSuffix(name, ".sh") {
-				// Run through sh to handle permissions implicitly
-				execArgs := append([]string{scriptPath}, cmdArgs...)
+			if strings.HasSuffix(capturedName, ".sh") {
+				execArgs := append([]string{capturedPath}, cmdArgs...)
 				cmd = exec.CommandContext(ctx, "sh", execArgs...)
 			} else {
-				execArgs := append([]string{scriptPath}, cmdArgs...)
+				execArgs := append([]string{capturedPath}, cmdArgs...)
 				cmd = exec.CommandContext(ctx, "python3", execArgs...)
 			}
 			cmd.Dir = r.workspaceDir
 
 			output, err := cmd.CombinedOutput()
+			runOK := err == nil
+			outStr := string(output)
+
+			// Record run in tracker
+			if r.wsMgr != nil {
+				_ = r.wsMgr.RecordRun("skills", capturedToolName, cmdArgsStr, outStr, runOK)
+			}
+
 			if err != nil {
 				return &ToolResult{ForLLM: fmt.Sprintf("Skill failed: %s\nOutput: %s", err, output)}
 			}
-
-			return &ToolResult{
-				ForLLM: string(output),
-			}
+			return &ToolResult{ForLLM: outStr}
 		}
 
 		r.RegisterTool(def, handler)
@@ -449,7 +471,30 @@ func (r *Registry) registerCoreTools() {
 }
 
 func (r *Registry) resolveWorkspacePath(p string) (string, error) {
-	// If the LLM passed an absolute path that already contains the workspace dir
+	if r.wsMgr != nil {
+		// If the LLM passed an absolute path that already contains the workspace dir, strip it
+		if filepath.IsAbs(p) {
+			cleaned := filepath.Clean(p)
+			if strings.HasPrefix(cleaned, r.workspaceDir) {
+				p = strings.TrimPrefix(cleaned, r.workspaceDir)
+				p = strings.TrimPrefix(p, "/")
+			}
+		}
+		safePath, err := r.wsMgr.ResolvePath(p)
+		if err != nil {
+			return "", fmt.Errorf("Error: %w", err)
+		}
+		// Safeguard: Prevent LLM from directly touching memory files
+		base := filepath.Base(safePath)
+		dir := filepath.Dir(safePath)
+		if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" ||
+			strings.Contains(dir, "ENTITIES") || base == "ENTITIES" {
+			return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. Use memory tools instead.")
+		}
+		return safePath, nil
+	}
+
+	// Fallback (no workspace manager)
 	if filepath.IsAbs(p) {
 		cleaned := filepath.Clean(p)
 		if strings.HasPrefix(cleaned, r.workspaceDir) {
@@ -463,7 +508,6 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 		return "", fmt.Errorf("Error: Path %s escapes workspace boundaries", p)
 	}
 
-	// Safeguard: Prevent LLM from bypassing memory tools by manually reading/writing memory files
 	base := filepath.Base(cleanPath)
 	dir := filepath.Dir(cleanPath)
 	if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" || strings.Contains(dir, "ENTITIES") || base == "ENTITIES" {
