@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"littleclaw/pkg/bus"
@@ -20,6 +21,20 @@ type contextKey string
 const (
 	ctxChatID  contextKey = "chatID"
 	ctxChannel contextKey = "channel"
+
+	// Context budget constants (in estimated tokens; 1 token ~= 4 chars)
+	maxContextTokens     = 8000  // total token budget for the system prompt
+	identityBudgetTokens = 800   // identity files (SOUL, IDENTITY, USER)
+	coreBudgetTokens     = 2000  // MEMORY.md
+	historyBudgetBytes   = 16000 // ~4000 tokens, expanded from 4000 bytes
+	entityBudgetTokens   = 800   // auto-surfaced entities
+	cronBudgetTokens     = 400   // cron summaries
+
+	// estimateTokens converts a character count to an approximate token count.
+	charsPerToken = 4
+
+	// maxToolResultChars caps the length of a single tool result in the messages array.
+	maxToolResultChars = 3000
 )
 
 // NanoCore represents the central Agent ReAct Loop.
@@ -33,9 +48,12 @@ type NanoCore struct {
 	providerType string
 	modelName    string
 	cronService  *CronService
-	lastChatID   string
-	lastChannel  string
 	tavilyAPIKey string
+
+	// Protected by chatMu for concurrent goroutine access
+	chatMu      sync.Mutex
+	lastChatID  string
+	lastChannel string
 }
 
 // NewNanoCore initializes the main agent brain.
@@ -81,18 +99,17 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 	// If this is a real user message, track it for background task context
 	if msg.ChatID != "internal_memory" && msg.ChatID != "" {
+		c.chatMu.Lock()
 		c.lastChatID = msg.ChatID
 		c.lastChannel = msg.Channel
+		c.chatMu.Unlock()
 	}
 
 	// Inject ChatID and Channel into context for cron jobs/tools to use
 	ctx = context.WithValue(ctx, ctxChatID, msg.ChatID)
 	ctx = context.WithValue(ctx, ctxChannel, msg.Channel)
 
-	// 1. Build initial context (System Prompt + Memory)
-	sysPrompt := c.buildSystemPrompt()
-
-	// 2. Initialize conversation history
+	// 1. Initialize user prompt first (needed for entity auto-surfacing)
 	userPrompt := msg.Content
 	if userPrompt == "" {
 		// Log and avoid sending empty prompts to the model which can trigger native language hallucinations
@@ -103,6 +120,9 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 	if msg.ReplyTo != "" {
 		userPrompt = fmt.Sprintf("Context (User is replying to this previous message):\n\"%s\"\n\nUser's message: %s", msg.ReplyTo, msg.Content)
 	}
+
+	// 2. Build initial context (System Prompt + Memory), using the user message for entity surfacing
+	sysPrompt := c.buildSystemPromptWithQuery(msg.Content)
 
 	messages := []providers.Message{
 		{Role: "system", Content: sysPrompt},
@@ -135,8 +155,11 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 			return
 		}
 
-		// Log Assistant Response internally (optional, for debug)
-		// fmt.Printf("LLM Response: %+v\n", resp)
+		// Log token usage for observability and adaptive context sizing
+		if resp.Usage.TotalTokens > 0 {
+			log.Printf("📊 Token usage: prompt=%d completion=%d total=%d (iteration %d)",
+				resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, iteration)
+		}
 
 		if len(resp.ToolCalls) > 0 {
 			// Add LLM's tool call intention to the message history
@@ -157,10 +180,10 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 				// Execute securely
 				result := c.toolRegistry.Execute(ctx, toolName, args)
 
-				// Append tool result to messages
+				// Append tool result to messages (truncated to prevent context blowup)
 				messages = append(messages, providers.Message{
 					Role:       "tool",
-					Content:    result.ForLLM,
+					Content:    truncateToolResult(result.ForLLM),
 					ToolCallID: tc["id"].(string),
 				})
 
@@ -215,6 +238,12 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 }
 
 func (c *NanoCore) buildSystemPrompt() string {
+	return c.buildSystemPromptWithQuery("")
+}
+
+// buildSystemPromptWithQuery assembles the full system prompt with token-budgeted sections.
+// The optional query is used for lightweight entity auto-surfacing.
+func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 	var builder strings.Builder
 	// FORMATTING RULE must come first so the LLM sees it before anything else
 	builder.WriteString("=== OUTPUT FORMAT RULE (MANDATORY) ===\n")
@@ -227,7 +256,7 @@ func (c *NanoCore) buildSystemPrompt() string {
 	builder.WriteString("======================================\n\n")
 	builder.WriteString("You are Littleclaw, an ultra-fast, deeply personalized AI agent.\n")
 	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
-	builder.WriteString("MEMORY: Use `update_core_memory`, `list_entities`, `read_entity`, `write_entity` tools only — never write_file/append_file for memory.\n")
+	builder.WriteString("MEMORY: Use `update_core_memory`, `append_core_memory`, `list_entities`, `read_entity`, `write_entity` tools only — never write_file/append_file for memory.\n")
 	builder.WriteString("WEB: Use `web_search` and `web_fetch` tools for real-time internet access.\n")
 
 	// Workspace structure context
@@ -243,17 +272,41 @@ func (c *NanoCore) buildSystemPrompt() string {
 	builder.WriteString("Use `track_item` to register scripts/tools with a description so you remember them later.\n")
 	builder.WriteString("===========================\n")
 
-	// Inject identity + personalized memory
-	builder.WriteString(c.memoryStore.BuildContext())
+	// Inject identity + personalized memory (token-budgeted)
+	identityCtx := c.memoryStore.ReadIdentityContext()
+	identityCtx = truncateToTokenBudget(identityCtx, identityBudgetTokens)
+	if identityCtx != "" {
+		builder.WriteString(identityCtx)
+		builder.WriteString("\n\n")
+	}
+
+	coreMemory := c.memoryStore.ReadLongTerm()
+	coreMemory = truncateToTokenBudget(coreMemory, coreBudgetTokens)
+	if coreMemory != "" {
+		builder.WriteString("## Personal Context & Memory\n\n")
+		builder.WriteString(coreMemory)
+		builder.WriteString("\n\n")
+	}
 
 	// Inject cron job run summaries so the agent knows what ran and when
 	if summary := c.buildCronSummary(); summary != "" {
+		summary = truncateToTokenBudget(summary, cronBudgetTokens)
 		builder.WriteString("\nScheduled Tasks - Recent Run Status:\n")
 		builder.WriteString(summary)
 	}
 
-	// Inject Short-Term Conversation Context
-	recentHistory := c.memoryStore.ReadRecentHistory(4000) // ~1000 tokens of history
+	// Auto-surface relevant entities based on user query
+	if query != "" {
+		entityCtx := c.memoryStore.FindRelevantEntities(query, entityBudgetTokens*charsPerToken)
+		if entityCtx != "" {
+			builder.WriteString("\n\n=== RELEVANT ENTITY CONTEXT ===\n")
+			builder.WriteString(entityCtx)
+			builder.WriteString("\n===============================\n")
+		}
+	}
+
+	// Inject Short-Term Conversation Context (expanded from 4000 to 16000 bytes)
+	recentHistory := c.memoryStore.ReadRecentHistory(historyBudgetBytes)
 	if recentHistory != "" {
 		builder.WriteString("\nRecent Conversational History:\n")
 		builder.WriteString(recentHistory)
@@ -301,6 +354,30 @@ func (c *NanoCore) buildCronSummary() string {
 	return sb.String()
 }
 
+// truncateToTokenBudget truncates a string to fit within the given token budget.
+// Uses a rough estimate of charsPerToken characters per token.
+func truncateToTokenBudget(s string, maxTokens int) string {
+	maxChars := maxTokens * charsPerToken
+	if len(s) <= maxChars {
+		return s
+	}
+	// Truncate at a word boundary if possible
+	truncated := s[:maxChars]
+	lastSpace := strings.LastIndex(truncated, " ")
+	if lastSpace > maxChars/2 {
+		truncated = truncated[:lastSpace]
+	}
+	return truncated + "\n...(truncated to fit context budget)"
+}
+
+// truncateToolResult caps a tool result string to avoid blowing up the message array.
+func truncateToolResult(s string) string {
+	if len(s) <= maxToolResultChars {
+		return s
+	}
+	return s[:maxToolResultChars] + "\n...(truncated)"
+}
+
 func (c *NanoCore) sendResponse(chatID string, replyToMessageID int, channel, content string, files []string) {
 	c.msgBus.SendOutbound(bus.OutboundMessage{
 		Channel:          channel,
@@ -344,6 +421,39 @@ func (c *NanoCore) registerMemoryTools() {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error updating core memory: %v", err)}
 		}
 		return &tools.ToolResult{ForLLM: "Successfully updated core memory (MEMORY.md)."}
+	})
+
+	// 1b. append_core_memory — incremental fact addition without full overwrite
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "append_core_memory",
+			Description: "Appends new facts or preferences to the core memory (MEMORY.md) WITHOUT overwriting existing content. Use this for incremental updates. Use update_core_memory only when you need to reorganize or clean up the entire memory.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "The new facts or information to append to the existing core memory.",
+					},
+				},
+				"required": []string{"content"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		content, ok := args["content"].(string)
+		if !ok {
+			return &tools.ToolResult{ForLLM: "Error: content must be a string"}
+		}
+
+		if err := c.memoryStore.AppendLongTerm(content); err != nil {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error appending to core memory: %v", err)}
+		}
+		return &tools.ToolResult{ForLLM: "Successfully appended to core memory (MEMORY.md)."}
 	})
 
 	// 2. read_entity
@@ -476,9 +586,11 @@ func (c *NanoCore) registerCronTools() {
 		channel, _ := ctx.Value(ctxChannel).(string)
 
 		// If we are in an internal loop (consolidation), use the last known user context
-		if (chatID == "internal_memory" || chatID == "") && c.lastChatID != "" {
+		if chatID == "internal_memory" || chatID == "" {
+			c.chatMu.Lock()
 			chatID = c.lastChatID
 			channel = c.lastChannel
+			c.chatMu.Unlock()
 		}
 
 		if chatID == "internal_memory" || chatID == "" {

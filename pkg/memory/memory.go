@@ -4,14 +4,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+)
+
+const (
+	// maxMemoryVersions is the number of MEMORY.md backups to keep before pruning.
+	maxMemoryVersions = 5
+	// internalRotationBytes is the threshold (1 MB) at which INTERNAL.md is archived.
+	internalRotationBytes = 1024 * 1024
 )
 
 // Store represents the persistent, two-tier memory system.
 type Store struct {
 	mu            sync.RWMutex
+	dirty         atomic.Bool // set when new history is appended; cleared by heartbeat
 	workspaceDir  string
 	memoryDir     string
 	entitiesDir   string
@@ -138,18 +148,76 @@ func (s *Store) ReadLongTerm() string {
 	return string(data)
 }
 
-// WriteLongTerm completely overwrites MEMORY.md with new consolidated facts.
+// WriteLongTerm creates a versioned backup of the current MEMORY.md, then overwrites it.
 func (s *Store) WriteLongTerm(content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Create a timestamped backup before overwriting
+	if _, err := os.Stat(s.memoryFile); err == nil {
+		backupName := fmt.Sprintf("MEMORY_%s.md", time.Now().Format("20060102_150405"))
+		backupPath := filepath.Join(s.memoryDir, backupName)
+		if data, err := os.ReadFile(s.memoryFile); err == nil && len(data) > 0 {
+			_ = os.WriteFile(backupPath, data, 0644)
+		}
+		s.pruneMemoryVersions()
+	}
+
 	return os.WriteFile(s.memoryFile, []byte(content), 0644)
+}
+
+// AppendLongTerm appends a fact block to MEMORY.md without overwriting existing content.
+func (s *Store) AppendLongTerm(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := os.OpenFile(s.memoryFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = f.WriteString("\n" + content + "\n")
+	return err
+}
+
+// pruneMemoryVersions keeps only the most recent maxMemoryVersions backup files.
+// Must be called with s.mu held.
+func (s *Store) pruneMemoryVersions() {
+	entries, err := os.ReadDir(s.memoryDir)
+	if err != nil {
+		return
+	}
+
+	var backups []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "MEMORY_") && strings.HasSuffix(name, ".md") && name != "MEMORY.md" {
+			backups = append(backups, name)
+		}
+	}
+
+	if len(backups) <= maxMemoryVersions {
+		return
+	}
+
+	// Sort ascending by name (which includes timestamp) so oldest are first
+	sort.Strings(backups)
+
+	// Remove oldest backups beyond the retention limit
+	toDelete := backups[:len(backups)-maxMemoryVersions]
+	for _, name := range toDelete {
+		_ = os.Remove(filepath.Join(s.memoryDir, name))
+	}
 }
 
 // AppendHistory logs an interaction block to the chronological HISTORY.md file.
 func (s *Store) AppendHistory(role, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Mark dirty so the heartbeat knows there is new content to consolidate
+	s.dirty.Store(true)
 
 	// Handle history rotation if file gets too large (e.g., > 1MB)
 	if info, err := os.Stat(s.historyFile); err == nil && info.Size() > 1024*1024 {
@@ -176,6 +244,13 @@ func (s *Store) AppendInternal(role, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Rotate INTERNAL.md if it exceeds the threshold (same logic as HISTORY.md)
+	if info, err := os.Stat(s.internalFile); err == nil && info.Size() > internalRotationBytes {
+		archiveName := fmt.Sprintf("INTERNAL_ARCHIVE_%s.md", time.Now().Format("20060102_150405"))
+		archivePath := filepath.Join(s.memoryDir, archiveName)
+		_ = os.Rename(s.internalFile, archivePath)
+	}
+
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	entry := fmt.Sprintf("[%s] %s: %s\n\n", timestamp, strings.ToUpper(role), content)
 
@@ -189,7 +264,14 @@ func (s *Store) AppendInternal(role, content string) error {
 	return err
 }
 
+// IsDirtyAndClear atomically checks if new history has been appended since the
+// last consolidation, and clears the flag. Returns true if there was new content.
+func (s *Store) IsDirtyAndClear() bool {
+	return s.dirty.CompareAndSwap(true, false)
+}
+
 // ReadRecentHistory returns the most recent portion of the HISTORY.md file (up to maxBytes).
+// It snaps to message boundaries (lines starting with "[") to avoid returning partial entries.
 func (s *Store) ReadRecentHistory(maxBytes int) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -225,11 +307,19 @@ func (s *Store) ReadRecentHistory(maxBytes int) string {
 	}
 
 	str := string(buf)
-	// If we didn't read from the very beginning, snap to the first full line to avoid cut-off words
+	// If we didn't read from the very beginning, snap to the first complete message entry
+	// (lines starting with "[" which is the timestamp delimiter)
 	if start > 0 {
-		idx := strings.Index(str, "\n")
+		// Find the first message boundary: a line starting with "["
+		idx := strings.Index(str, "\n[")
 		if idx >= 0 && idx < len(str)-1 {
 			str = str[idx+1:]
+		} else {
+			// Fallback: snap to the first newline
+			idx = strings.Index(str, "\n")
+			if idx >= 0 && idx < len(str)-1 {
+				str = str[idx+1:]
+			}
 		}
 	}
 
@@ -282,6 +372,66 @@ func (s *Store) BuildContext() string {
 		return "No deeply personalized memory found yet."
 	}
 	return result
+}
+
+// FindRelevantEntities scans entity names against the query and returns matching
+// entity contents, capped at maxBytes total. This provides lightweight keyword-based
+// entity auto-surfacing without requiring embeddings or a vector store.
+func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
+	entities, err := s.ListEntities()
+	if err != nil || len(entities) == 0 {
+		return ""
+	}
+
+	queryLower := strings.ToLower(query)
+	var parts []string
+	totalLen := 0
+
+	for _, name := range entities {
+		// Check if any word from the entity name appears in the query
+		nameLower := strings.ToLower(name)
+		words := strings.Fields(nameLower)
+		matched := false
+		for _, word := range words {
+			if len(word) >= 3 && strings.Contains(queryLower, word) {
+				matched = true
+				break
+			}
+		}
+		// Also check if the full entity name (underscore-joined) appears
+		if !matched && strings.Contains(queryLower, strings.ReplaceAll(nameLower, " ", "_")) {
+			matched = true
+		}
+		if !matched {
+			continue
+		}
+
+		data := s.ReadEntity(name)
+		if data == "" {
+			continue
+		}
+
+		entry := fmt.Sprintf("[Entity: %s]\n%s", name, data)
+		entryLen := len(entry)
+
+		if totalLen+entryLen > maxBytes {
+			// Truncate this entity to fit the budget
+			remaining := maxBytes - totalLen
+			if remaining > 100 {
+				entry = entry[:remaining] + "\n...(truncated)"
+				parts = append(parts, entry)
+			}
+			break
+		}
+
+		parts = append(parts, entry)
+		totalLen += entryLen
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // ListEntities returns a list of all existing entity names (without the .md extension).
