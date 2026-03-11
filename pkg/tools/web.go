@@ -19,7 +19,7 @@ import (
 
 const (
 	webFetchMaxBytes    = 30_000 // ~30 KB of raw body before truncation
-	webFetchMaxChars    = 8_000  // characters of clean text returned to LLM
+	WebFetchMaxChars    = 8_000  // characters of clean text returned to LLM
 	webSearchMaxResults = 5      // max search result items to return
 	httpTimeout         = 15 * time.Second
 )
@@ -33,7 +33,7 @@ var (
 	reNewlines = regexp.MustCompile(`\n{3,}`)
 )
 
-func stripHTML(raw string) string {
+func StripHTML(raw string) string {
 	s := reScript.ReplaceAllString(raw, " ")
 	s = reTag.ReplaceAllString(s, " ")
 	// Decode common HTML entities
@@ -55,16 +55,16 @@ func stripHTML(raw string) string {
 	}
 	s = strings.Join(clean, "\n")
 	s = reNewlines.ReplaceAllString(s, "\n\n")
-	if len([]rune(s)) > webFetchMaxChars {
+	if len([]rune(s)) > WebFetchMaxChars {
 		runes := []rune(s)
-		s = string(runes[:webFetchMaxChars]) + "\n\n[...truncated]"
+		s = string(runes[:WebFetchMaxChars]) + "\n\n[...truncated]"
 	}
 	return strings.TrimSpace(s)
 }
 
 // --- web_fetch implementation ---
 
-func doWebFetch(rawURL string) (string, error) {
+func DoWebFetch(rawURL string) (string, error) {
 	client := &http.Client{Timeout: httpTimeout}
 
 	req, err := http.NewRequest("GET", rawURL, nil)
@@ -97,14 +97,14 @@ func doWebFetch(rawURL string) (string, error) {
 		var buf bytes.Buffer
 		if json.Indent(&buf, body, "", "  ") == nil {
 			text := buf.String()
-			if len([]rune(text)) > webFetchMaxChars {
-				text = string([]rune(text)[:webFetchMaxChars]) + "\n\n[...truncated]"
+			if len([]rune(text)) > WebFetchMaxChars {
+				text = string([]rune(text)[:WebFetchMaxChars]) + "\n\n[...truncated]"
 			}
 			return text, nil
 		}
 	}
 
-	return stripHTML(string(body)), nil
+	return StripHTML(string(body)), nil
 }
 
 // --- Tavily search ---
@@ -120,16 +120,16 @@ type tavilyRequest struct {
 	ExcludeDomains    []string `json:"exclude_domains,omitempty"`
 }
 
-type tavilyResult struct {
+type TavilyResult struct {
 	Title   string  `json:"title"`
 	URL     string  `json:"url"`
 	Content string  `json:"content"`
 	Score   float64 `json:"score"`
 }
 
-type tavilyResponse struct {
+type TavilyResponse struct {
 	Answer  string         `json:"answer"`
-	Results []tavilyResult `json:"results"`
+	Results []TavilyResult `json:"results"`
 }
 
 // tavilySearch calls the Tavily API and returns (formatted results, isRateLimited, error).
@@ -178,15 +178,15 @@ func tavilySearch(ctx context.Context, apiKey, query string) (string, bool, erro
 		return "", false, fmt.Errorf("failed to read Tavily response: %w", err)
 	}
 
-	var tavilyResp tavilyResponse
+	var tavilyResp TavilyResponse
 	if err := json.Unmarshal(respBody, &tavilyResp); err != nil {
 		return "", false, fmt.Errorf("failed to parse Tavily response: %w", err)
 	}
 
-	return formatTavilyResults(query, tavilyResp), false, nil
+	return FormatTavilyResults(query, tavilyResp), false, nil
 }
 
-func formatTavilyResults(query string, r tavilyResponse) string {
+func FormatTavilyResults(query string, r TavilyResponse) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Web search results for: %q\n", query))
 	sb.WriteString("Source: Tavily\n\n")
@@ -248,13 +248,13 @@ func duckDuckGoSearch(ctx context.Context, query string) (string, error) {
 		return "", fmt.Errorf("failed to read DDG response: %w", err)
 	}
 
-	results := parseDDGHTML(string(body), query)
+	results := ParseDDGHTML(string(body), query)
 	return results, nil
 }
 
-// parseDDGHTML extracts result titles, URLs, and snippets from DDG's HTML response
+// ParseDDGHTML extracts result titles, URLs, and snippets from DDG's HTML response
 // without any external HTML-parsing dependency.
-func parseDDGHTML(html, query string) string {
+func ParseDDGHTML(html, query string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Web search results for: %q\n", query))
 	sb.WriteString("Source: DuckDuckGo\n\n")
@@ -275,7 +275,7 @@ func parseDDGHTML(html, query string) string {
 			break
 		}
 		rawURL := m[1]
-		title := strings.TrimSpace(stripHTML(m[2]))
+		title := strings.TrimSpace(StripHTML(m[2]))
 		if title == "" || rawURL == "" {
 			continue
 		}
@@ -297,7 +297,7 @@ func parseDDGHTML(html, query string) string {
 		sb.WriteString(fmt.Sprintf("   URL: %s\n", rawURL))
 
 		if i < len(snippetMatches) {
-			snippet := strings.TrimSpace(stripHTML(snippetMatches[i][1]))
+			snippet := strings.TrimSpace(StripHTML(snippetMatches[i][1]))
 			if len([]rune(snippet)) > 300 {
 				snippet = string([]rune(snippet)[:300]) + "..."
 			}
@@ -349,7 +349,7 @@ func (r *Registry) registerWebTools() {
 			return &ToolResult{ForLLM: "Error: url must start with http:// or https://"}
 		}
 
-		text, err := doWebFetch(rawURL)
+		text, err := DoWebFetch(rawURL)
 		if err != nil {
 			return &ToolResult{ForLLM: fmt.Sprintf("web_fetch failed: %v", err)}
 		}

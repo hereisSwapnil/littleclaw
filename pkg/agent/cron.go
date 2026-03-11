@@ -57,7 +57,7 @@ type CronService struct {
 	entryIDs     map[string]cron.EntryID
 	cronRunner   *cron.Cron
 	dataFile     string // absolute path to CRON.json
-	runsDir      string // absolute path to cron/runs/ directory
+	RunsDir      string // absolute path to cron/runs/ directory
 	workspaceDir string
 	msgBus       *bus.MessageBus
 	memStore     *memory.Store
@@ -71,7 +71,7 @@ func NewCronService(workspaceDir string, msgBus *bus.MessageBus, mem *memory.Sto
 		entryIDs:     make(map[string]cron.EntryID),
 		cronRunner:   cron.New(cron.WithSeconds()),
 		dataFile:     filepath.Join(workspaceDir, "CRON.json"),
-		runsDir:      runsDir,
+		RunsDir:      runsDir,
 		workspaceDir: workspaceDir,
 		msgBus:       msgBus,
 		memStore:     mem,
@@ -81,7 +81,7 @@ func NewCronService(workspaceDir string, msgBus *bus.MessageBus, mem *memory.Sto
 // Start loads persisted jobs and begins the cron scheduler.
 func (cs *CronService) Start(ctx context.Context) error {
 	// Ensure the runs directory exists
-	if err := os.MkdirAll(cs.runsDir, 0755); err != nil {
+	if err := os.MkdirAll(cs.RunsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cron runs dir: %w", err)
 	}
 
@@ -246,7 +246,7 @@ func (cs *CronService) runnerFor(job *CronJob) func() {
 		cs.mu.Unlock()
 
 		// Append run record to per-job JSONL log
-		cs.recordRun(job.ID, runStatus, runErr, durationMs)
+		cs.RecordRun(job.ID, runStatus, runErr, durationMs)
 
 		// Send result to the user's Telegram chat
 		if job.ChatID != "" && job.Channel != "" {
@@ -264,8 +264,8 @@ func (cs *CronService) runnerFor(job *CronJob) func() {
 }
 
 // recordRun appends a CronRunRecord to the per-job JSONL file in the runs directory.
-func (cs *CronService) recordRun(jobID, status, errMsg string, durationMs int64) {
-	if err := os.MkdirAll(cs.runsDir, 0755); err != nil {
+func (cs *CronService) RecordRun(jobID, status, errMsg string, durationMs int64) {
+	if err := os.MkdirAll(cs.RunsDir, 0755); err != nil {
 		log.Printf("⏰ CronService: failed to create runs dir: %v\n", err)
 		return
 	}
@@ -294,7 +294,7 @@ func (cs *CronService) recordRun(jobID, status, errMsg string, durationMs int64)
 		return
 	}
 
-	logPath := filepath.Join(cs.runsDir, jobID+".jsonl")
+	logPath := filepath.Join(cs.RunsDir, jobID+".jsonl")
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Printf("⏰ CronService: failed to open run log %s: %v\n", logPath, err)
@@ -307,13 +307,13 @@ func (cs *CronService) recordRun(jobID, status, errMsg string, durationMs int64)
 
 // GetRecentRuns reads the last N lines from a job's JSONL run log file.
 func (cs *CronService) GetRecentRuns(jobID string, maxLines int) []CronRunRecord {
-	logPath := filepath.Join(cs.runsDir, jobID+".jsonl")
+	logPath := filepath.Join(cs.RunsDir, jobID+".jsonl")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		return nil
 	}
 
-	lines := splitLines(string(data))
+	lines := SplitLines(string(data))
 	// Take the last maxLines non-empty lines
 	var records []CronRunRecord
 	for i := len(lines) - 1; i >= 0 && len(records) < maxLines; i-- {
@@ -329,7 +329,7 @@ func (cs *CronService) GetRecentRuns(jobID string, maxLines int) []CronRunRecord
 	return records
 }
 
-func splitLines(s string) []string {
+func SplitLines(s string) []string {
 	var lines []string
 	start := 0
 	for i, c := range s {
@@ -362,6 +362,21 @@ func (cs *CronService) load() error {
 	return nil
 }
 
+// Load is an exported wrapper for load() used by external tests.
+func (cs *CronService) Load() error { return cs.load() }
+
+// Jobs returns a copy of the internal jobs map (keyed by job ID).
+// Useful for external test inspection of loaded state.
+func (cs *CronService) Jobs() map[string]*CronJob {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	out := make(map[string]*CronJob, len(cs.jobs))
+	for k, v := range cs.jobs {
+		out[k] = v
+	}
+	return out
+}
+
 // save writes the current jobs to CRON.json.
 func (cs *CronService) save() error {
 	jobs := make([]*CronJob, 0, len(cs.jobs))
@@ -379,10 +394,10 @@ func (cs *CronService) save() error {
 
 // GenerateJobID creates a simple unique ID from a label
 func GenerateJobID(label string) string {
-	return sanitizeLabel(label)
+	return SanitizeLabel(label)
 }
 
-func sanitizeLabel(s string) string {
+func SanitizeLabel(s string) string {
 	result := make([]byte, 0, len(s))
 	for _, c := range s {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {

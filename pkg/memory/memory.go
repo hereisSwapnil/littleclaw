@@ -15,12 +15,12 @@ import (
 )
 
 const (
-	// maxMemoryVersions is the number of MEMORY.md backups to keep before pruning.
-	maxMemoryVersions = 5
-	// internalRotationBytes is the threshold (1 MB) at which INTERNAL.md is archived.
-	internalRotationBytes = 1024 * 1024
-	// maxDailyLogBytes is the threshold at which a daily log triggers summarization.
-	maxDailyLogBytes = 8000
+	// MaxMemoryVersions is the number of MEMORY.md backups to keep before pruning.
+	MaxMemoryVersions = 5
+	// InternalRotationBytes is the threshold (1 MB) at which INTERNAL.md is archived.
+	InternalRotationBytes = 1024 * 1024
+	// MaxDailyLogBytes is the threshold at which a daily log triggers summarization.
+	MaxDailyLogBytes = 8000
 	// maxSearchResults caps how many matches search_history returns.
 	maxSearchResults = 20
 	// maxInternalReadbackBytes caps how much of the internal log is returned by the readback tool.
@@ -33,7 +33,7 @@ type Store struct {
 	dirty         atomic.Bool // set when new history is appended; cleared by heartbeat
 	workspaceDir  string
 	memoryDir     string
-	entitiesDir   string
+	EntitiesDir   string
 	summariesDir  string
 	memoryFile    string
 	internalFile  string
@@ -52,7 +52,7 @@ func NewStore(workspace string) (*Store, error) {
 	s := &Store{
 		workspaceDir:  workspace,
 		memoryDir:     memoryDir,
-		entitiesDir:   entitiesDir,
+		EntitiesDir:   entitiesDir,
 		summariesDir:  summariesDir,
 		memoryFile:    filepath.Join(memoryDir, "MEMORY.md"),
 		internalFile:  filepath.Join(memoryDir, "INTERNAL.md"),
@@ -74,6 +74,21 @@ func NewStore(workspace string) (*Store, error) {
 
 	return s, nil
 }
+
+// Exported field accessors for external testing and inspection.
+func (s *Store) SummariesDir() string  { return s.summariesDir }
+func (s *Store) MemoryDir() string     { return s.memoryDir }
+func (s *Store) HeartbeatFile() string { return s.heartbeatFile }
+func (s *Store) InternalFile() string  { return s.internalFile }
+func (s *Store) SoulFile() string      { return s.soulFile }
+func (s *Store) IdentityFile() string  { return s.identityFile }
+func (s *Store) UserFile() string      { return s.userFile }
+
+// DailyLogPath returns the path to the daily log for a given time.
+func (s *Store) DailyLogPath(t time.Time) string { return s.dailyLogPath(t) }
+
+// SetDirty sets or clears the dirty flag (for test use).
+func (s *Store) SetDirty(v bool) { s.dirty.Store(v) }
 
 // scaffoldIdentityFiles creates the workspace identity files if they don't already exist.
 func (s *Store) scaffoldIdentityFiles() {
@@ -217,7 +232,7 @@ func (s *Store) AppendLongTerm(content string) error {
 	return err
 }
 
-// pruneMemoryVersions keeps only the most recent maxMemoryVersions backup files.
+// pruneMemoryVersions keeps only the most recent MaxMemoryVersions backup files.
 // Must be called with s.mu held.
 func (s *Store) pruneMemoryVersions() {
 	entries, err := os.ReadDir(s.memoryDir)
@@ -233,7 +248,7 @@ func (s *Store) pruneMemoryVersions() {
 		}
 	}
 
-	if len(backups) <= maxMemoryVersions {
+	if len(backups) <= MaxMemoryVersions {
 		return
 	}
 
@@ -241,7 +256,7 @@ func (s *Store) pruneMemoryVersions() {
 	sort.Strings(backups)
 
 	// Remove oldest backups beyond the retention limit
-	toDelete := backups[:len(backups)-maxMemoryVersions]
+	toDelete := backups[:len(backups)-MaxMemoryVersions]
 	for _, name := range toDelete {
 		_ = os.Remove(filepath.Join(s.memoryDir, name))
 	}
@@ -279,7 +294,7 @@ func (s *Store) AppendHistory(role, content string) error {
 }
 
 // ReadRecentHistory returns conversation history from today and yesterday's daily logs,
-// capped at maxBytes. If yesterday's log exceeds maxDailyLogBytes, its summary is used instead.
+// capped at maxBytes. If yesterday's log exceeds MaxDailyLogBytes, its summary is used instead.
 func (s *Store) ReadRecentHistory(maxBytes int) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -317,7 +332,7 @@ func (s *Store) ReadRecentHistory(maxBytes int) string {
 			// Truncate today, keeping the tail (most recent)
 			remaining := maxBytes - totalLen
 			if remaining > 200 {
-				header = snapToTail(header, remaining)
+				header = SnapToTail(header, remaining)
 				parts = append(parts, header)
 			}
 		} else {
@@ -356,7 +371,7 @@ func (s *Store) readDailyLogOrSummary(t time.Time) string {
 }
 
 // snapToTail returns the tail portion of s, snapping to the first message boundary.
-func snapToTail(s string, maxBytes int) string {
+func SnapToTail(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
@@ -448,7 +463,7 @@ func (s *Store) SearchHistory(query string, fromDate, toDate string) []HistorySe
 
 		// Split by entries (lines starting with "[")
 		content := string(data)
-		entryBlocks := splitHistoryEntries(content)
+		entryBlocks := SplitHistoryEntries(content)
 
 		for _, block := range entryBlocks {
 			if strings.Contains(strings.ToLower(block), queryLower) {
@@ -473,7 +488,7 @@ type HistorySearchResult struct {
 }
 
 // splitHistoryEntries splits a history file into individual message entries.
-func splitHistoryEntries(content string) []string {
+func SplitHistoryEntries(content string) []string {
 	lines := strings.Split(content, "\n")
 	var entries []string
 	var current strings.Builder
@@ -509,7 +524,7 @@ func (s *Store) NeedsSummarization() (bool, string, string) {
 	}
 
 	info, err := os.Stat(logPath)
-	if err != nil || info.Size() < maxDailyLogBytes {
+	if err != nil || info.Size() < MaxDailyLogBytes {
 		return false, "", ""
 	}
 
@@ -540,7 +555,7 @@ func (s *Store) AppendInternal(role, content string) error {
 	defer s.mu.Unlock()
 
 	// Rotate INTERNAL.md if it exceeds the threshold (same logic as before)
-	if info, err := os.Stat(s.internalFile); err == nil && info.Size() > internalRotationBytes {
+	if info, err := os.Stat(s.internalFile); err == nil && info.Size() > InternalRotationBytes {
 		archiveName := fmt.Sprintf("INTERNAL_ARCHIVE_%s.md", time.Now().Format("20060102_150405"))
 		archivePath := filepath.Join(s.memoryDir, archiveName)
 		_ = os.Rename(s.internalFile, archivePath)
@@ -652,14 +667,14 @@ func (s *Store) readEntityUnsafe(entityName string) string {
 	}
 
 	for _, candidate := range candidates {
-		data, err := os.ReadFile(filepath.Join(s.entitiesDir, candidate))
+		data, err := os.ReadFile(filepath.Join(s.EntitiesDir, candidate))
 		if err == nil {
 			return string(data)
 		}
 	}
 
 	// Fuzzy fallback: scan the directory for case-insensitive match
-	entries, err := os.ReadDir(s.entitiesDir)
+	entries, err := os.ReadDir(s.EntitiesDir)
 	if err != nil {
 		return ""
 	}
@@ -669,7 +684,7 @@ func (s *Store) readEntityUnsafe(entityName string) string {
 		}
 		entryNorm := normalizeEntityName(strings.TrimSuffix(e.Name(), ".md"))
 		if entryNorm == normalized {
-			data, err := os.ReadFile(filepath.Join(s.entitiesDir, e.Name()))
+			data, err := os.ReadFile(filepath.Join(s.EntitiesDir, e.Name()))
 			if err == nil {
 				return string(data)
 			}
@@ -693,13 +708,13 @@ func (s *Store) WriteEntity(entityName, content string) error {
 	// Check for and remove any legacy-named duplicates
 	s.removeLegacyDuplicates(entityName, normalized)
 
-	return os.WriteFile(filepath.Join(s.entitiesDir, normalized+".md"), []byte(content), 0644)
+	return os.WriteFile(filepath.Join(s.EntitiesDir, normalized+".md"), []byte(content), 0644)
 }
 
 // removeLegacyDuplicates removes old files that map to the same normalized name.
 // Must be called with s.mu held.
 func (s *Store) removeLegacyDuplicates(originalName, normalizedName string) {
-	entries, err := os.ReadDir(s.entitiesDir)
+	entries, err := os.ReadDir(s.EntitiesDir)
 	if err != nil {
 		return
 	}
@@ -714,7 +729,7 @@ func (s *Store) removeLegacyDuplicates(originalName, normalizedName string) {
 		}
 		entryNorm := normalizeEntityName(strings.TrimSuffix(e.Name(), ".md"))
 		if entryNorm == normalizedName {
-			_ = os.Remove(filepath.Join(s.entitiesDir, e.Name()))
+			_ = os.Remove(filepath.Join(s.EntitiesDir, e.Name()))
 		}
 	}
 }
@@ -724,7 +739,7 @@ func (s *Store) ListEntities() ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entries, err := os.ReadDir(s.entitiesDir)
+	entries, err := os.ReadDir(s.EntitiesDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read entities directory: %w", err)
 	}
@@ -752,7 +767,7 @@ func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
 	}
 
 	queryLower := strings.ToLower(query)
-	queryTrigrams := trigrams(queryLower)
+	queryTrigrams := Trigrams(queryLower)
 
 	type scored struct {
 		name  string
@@ -764,7 +779,7 @@ func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
 		nameLower := strings.ToLower(name)
 		nameForMatch := strings.ReplaceAll(nameLower, "_", " ")
 
-		score := trigramSimilarity(queryTrigrams, trigrams(nameForMatch))
+		score := TrigramSimilarity(queryTrigrams, Trigrams(nameForMatch))
 
 		// Boost: exact word match (any word >= 3 chars from entity name appears in query)
 		words := strings.Fields(nameForMatch)
@@ -830,7 +845,7 @@ func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
 // ---------------------------------------------------------------------------
 
 // trigrams generates the set of character trigrams from a string.
-func trigrams(s string) map[string]bool {
+func Trigrams(s string) map[string]bool {
 	s = "  " + s + "  " // pad for edge trigrams
 	set := make(map[string]bool)
 	runes := []rune(s)
@@ -842,7 +857,7 @@ func trigrams(s string) map[string]bool {
 }
 
 // trigramSimilarity returns the Jaccard similarity between two trigram sets (0.0 - 1.0).
-func trigramSimilarity(a, b map[string]bool) float64 {
+func TrigramSimilarity(a, b map[string]bool) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}

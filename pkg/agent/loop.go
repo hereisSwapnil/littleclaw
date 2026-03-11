@@ -25,17 +25,16 @@ const (
 	// Context budget constants (in estimated tokens; 1 token ~= 4 chars)
 	maxContextTokens     = 8000  // total token budget for the system prompt
 	identityBudgetTokens = 800   // identity files (SOUL, IDENTITY, USER)
-	coreBudgetTokens     = 2000  // MEMORY.md
+	CoreBudgetTokens     = 2000  // MEMORY.md
 	historyBudgetBytes   = 16000 // ~4000 tokens, expanded from 4000 bytes
 	entityBudgetTokens   = 800   // auto-surfaced entities
 	cronBudgetTokens     = 400   // cron summaries
 
-	// charsPerToken is the default ratio for the simple truncation helper.
-	// The more sophisticated memory.EstimateTokens() is used where precision matters.
-	charsPerToken = 4
+	// CharsPerToken is the default ratio for the simple truncation helper.
+	CharsPerToken = 4
 
-	// maxToolResultChars caps the length of a single tool result in the messages array.
-	maxToolResultChars = 3000
+	// MaxToolResultChars caps the length of a single tool result in the messages array.
+	MaxToolResultChars = 3000
 
 	// preCompactionThreshold: when prompt tokens exceed this fraction of the model's
 	// apparent context window, trigger an early memory consolidation.
@@ -61,8 +60,8 @@ type NanoCore struct {
 	lastChannel string
 
 	// Pre-compaction tracking
-	lastPromptTokens int
-	contextWindowEst int // estimated context window for the model (set on first API response)
+	LastPromptTokens int
+	ContextWindowEst int // estimated context window for the model (set on first API response)
 }
 
 // NewNanoCore initializes the main agent brain.
@@ -101,6 +100,9 @@ func NewNanoCore(provider providers.Provider, providerType, modelName, workspace
 	return nc, nil
 }
 
+// MemoryStore returns the underlying memory store (for external test access).
+func (c *NanoCore) MemoryStore() *memory.Store { return c.memoryStore }
+
 // RunAgentLoop processes an incoming user message through a multi-step reasoning loop.
 func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 	// Update heartbeat so there's always a "last active" timestamp
@@ -131,7 +133,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 	}
 
 	// 2. Build initial context (System Prompt + Memory), using the user message for entity surfacing
-	sysPrompt := c.buildSystemPromptWithQuery(msg.Content)
+	sysPrompt := c.BuildSystemPromptWithQuery(msg.Content)
 
 	messages := []providers.Message{
 		{Role: "system", Content: sysPrompt},
@@ -176,11 +178,11 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 				resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, iteration)
 
 			// Track for pre-compaction awareness
-			c.lastPromptTokens = resp.Usage.PromptTokens
-			if c.contextWindowEst == 0 && resp.Usage.PromptTokens > 0 {
+			c.LastPromptTokens = resp.Usage.PromptTokens
+			if c.ContextWindowEst == 0 && resp.Usage.PromptTokens > 0 {
 				// Heuristic: estimate context window from first response.
 				// Most models use 128k, but we use a conservative estimate.
-				c.contextWindowEst = estimateContextWindow(c.modelName)
+				c.ContextWindowEst = EstimateContextWindow(c.modelName)
 			}
 		}
 
@@ -206,7 +208,7 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 				// Append tool result to messages (truncated to prevent context blowup)
 				messages = append(messages, providers.Message{
 					Role:       "tool",
-					Content:    truncateToolResult(result.ForLLM),
+					Content:    TruncateToolResult(result.ForLLM),
 					ToolCallID: tc["id"].(string),
 				})
 
@@ -261,12 +263,12 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 }
 
 func (c *NanoCore) buildSystemPrompt() string {
-	return c.buildSystemPromptWithQuery("")
+	return c.BuildSystemPromptWithQuery("")
 }
 
 // buildSystemPromptWithQuery assembles the full system prompt with token-budgeted sections.
 // The optional query is used for lightweight entity auto-surfacing.
-func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
+func (c *NanoCore) BuildSystemPromptWithQuery(query string) string {
 	var builder strings.Builder
 	// FORMATTING RULE must come first so the LLM sees it before anything else
 	builder.WriteString("=== OUTPUT FORMAT RULE (MANDATORY) ===\n")
@@ -301,14 +303,14 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 
 	// Inject identity + personalized memory (token-budgeted)
 	identityCtx := c.memoryStore.ReadIdentityContext()
-	identityCtx = truncateToTokenBudget(identityCtx, identityBudgetTokens)
+	identityCtx = TruncateToTokenBudget(identityCtx, identityBudgetTokens)
 	if identityCtx != "" {
 		builder.WriteString(identityCtx)
 		builder.WriteString("\n\n")
 	}
 
 	coreMemory := c.memoryStore.ReadLongTerm()
-	coreMemory = truncateToTokenBudget(coreMemory, coreBudgetTokens)
+	coreMemory = TruncateToTokenBudget(coreMemory, CoreBudgetTokens)
 	if coreMemory != "" {
 		builder.WriteString("## Personal Context & Memory\n\n")
 		builder.WriteString(coreMemory)
@@ -316,7 +318,7 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 
 		// Warn if core memory is approaching budget limits
 		coreSize := c.memoryStore.CoreMemorySize()
-		budgetBytes := int64(coreBudgetTokens * charsPerToken)
+		budgetBytes := int64(CoreBudgetTokens * CharsPerToken)
 		if coreSize > budgetBytes {
 			builder.WriteString(fmt.Sprintf("⚠️ MEMORY.md (%d bytes) exceeds budget (%d bytes). Consider using `update_core_memory` to reorganize and deduplicate.\n\n",
 				coreSize, budgetBytes))
@@ -325,14 +327,14 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 
 	// Inject cron job run summaries so the agent knows what ran and when
 	if summary := c.buildCronSummary(); summary != "" {
-		summary = truncateToTokenBudget(summary, cronBudgetTokens)
+		summary = TruncateToTokenBudget(summary, cronBudgetTokens)
 		builder.WriteString("\nScheduled Tasks - Recent Run Status:\n")
 		builder.WriteString(summary)
 	}
 
 	// Auto-surface relevant entities based on user query (trigram + keyword similarity)
 	if query != "" {
-		entityCtx := c.memoryStore.FindRelevantEntities(query, entityBudgetTokens*charsPerToken)
+		entityCtx := c.memoryStore.FindRelevantEntities(query, entityBudgetTokens*CharsPerToken)
 		if entityCtx != "" {
 			builder.WriteString("\n\n=== RELEVANT ENTITY CONTEXT ===\n")
 			builder.WriteString(entityCtx)
@@ -391,8 +393,8 @@ func (c *NanoCore) buildCronSummary() string {
 
 // truncateToTokenBudget truncates a string to fit within the given token budget.
 // Uses a rough estimate of charsPerToken characters per token.
-func truncateToTokenBudget(s string, maxTokens int) string {
-	maxChars := maxTokens * charsPerToken
+func TruncateToTokenBudget(s string, maxTokens int) string {
+	maxChars := maxTokens * CharsPerToken
 	if len(s) <= maxChars {
 		return s
 	}
@@ -406,11 +408,11 @@ func truncateToTokenBudget(s string, maxTokens int) string {
 }
 
 // truncateToolResult caps a tool result string to avoid blowing up the message array.
-func truncateToolResult(s string) string {
-	if len(s) <= maxToolResultChars {
+func TruncateToolResult(s string) string {
+	if len(s) <= MaxToolResultChars {
 		return s
 	}
-	return s[:maxToolResultChars] + "\n...(truncated)"
+	return s[:MaxToolResultChars] + "\n...(truncated)"
 }
 
 func (c *NanoCore) sendResponse(chatID string, replyToMessageID int, channel, content string, files []string) {
@@ -426,15 +428,15 @@ func (c *NanoCore) sendResponse(chatID string, replyToMessageID int, channel, co
 // IsApproachingContextLimit returns true if the last observed prompt token usage
 // exceeds preCompactionThreshold of the estimated context window.
 func (c *NanoCore) IsApproachingContextLimit() bool {
-	if c.contextWindowEst == 0 || c.lastPromptTokens == 0 {
+	if c.ContextWindowEst == 0 || c.LastPromptTokens == 0 {
 		return false
 	}
-	ratio := float64(c.lastPromptTokens) / float64(c.contextWindowEst)
+	ratio := float64(c.LastPromptTokens) / float64(c.ContextWindowEst)
 	return ratio >= preCompactionThreshold
 }
 
 // estimateContextWindow returns a conservative context window estimate for common models.
-func estimateContextWindow(modelName string) int {
+func EstimateContextWindow(modelName string) int {
 	modelLower := strings.ToLower(modelName)
 	switch {
 	case strings.Contains(modelLower, "gpt-4o"),
@@ -525,7 +527,7 @@ func (c *NanoCore) registerMemoryTools() {
 
 		// Check if memory is getting large and warn
 		size := c.memoryStore.CoreMemorySize()
-		budgetBytes := int64(coreBudgetTokens * charsPerToken)
+		budgetBytes := int64(CoreBudgetTokens * CharsPerToken)
 		warning := ""
 		if size > budgetBytes {
 			warning = fmt.Sprintf(" WARNING: MEMORY.md is now %d bytes (budget: %d bytes). Consider using update_core_memory to reorganize and deduplicate.", size, budgetBytes)
