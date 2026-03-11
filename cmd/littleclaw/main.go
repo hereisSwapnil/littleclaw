@@ -81,7 +81,7 @@ func runConfigure() {
 	cfg.TelegramToken = promptWithDefault("Enter Telegram Bot Token", cfg.TelegramToken)
 	cfg.TelegramAllowedUser = promptWithDefault("Enter Restricted Telegram User ID (Optional)", cfg.TelegramAllowedUser)
 
-	providerOptions := []string{"openrouter", "ollama", "openai", "anthropic"}
+	providerOptions := []string{"openrouter", "ollama", "openai"}
 	cfg.ProviderType = selectOption("Choose LLM Provider", providerOptions, cfg.ProviderType)
 
 	if cfg.ProviderType == "ollama" {
