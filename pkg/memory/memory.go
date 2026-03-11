@@ -2,13 +2,16 @@ package memory
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 const (
@@ -16,17 +19,23 @@ const (
 	maxMemoryVersions = 5
 	// internalRotationBytes is the threshold (1 MB) at which INTERNAL.md is archived.
 	internalRotationBytes = 1024 * 1024
+	// maxDailyLogBytes is the threshold at which a daily log triggers summarization.
+	maxDailyLogBytes = 8000
+	// maxSearchResults caps how many matches search_history returns.
+	maxSearchResults = 20
+	// maxInternalReadbackBytes caps how much of the internal log is returned by the readback tool.
+	maxInternalReadbackBytes = 8000
 )
 
-// Store represents the persistent, two-tier memory system.
+// Store represents the persistent, multi-tier memory system.
 type Store struct {
 	mu            sync.RWMutex
 	dirty         atomic.Bool // set when new history is appended; cleared by heartbeat
 	workspaceDir  string
 	memoryDir     string
 	entitiesDir   string
+	summariesDir  string
 	memoryFile    string
-	historyFile   string
 	internalFile  string
 	heartbeatFile string
 	soulFile      string
@@ -38,13 +47,14 @@ type Store struct {
 func NewStore(workspace string) (*Store, error) {
 	memoryDir := filepath.Join(workspace, "memory")
 	entitiesDir := filepath.Join(memoryDir, "ENTITIES")
+	summariesDir := filepath.Join(memoryDir, "summaries")
 
 	s := &Store{
 		workspaceDir:  workspace,
 		memoryDir:     memoryDir,
 		entitiesDir:   entitiesDir,
+		summariesDir:  summariesDir,
 		memoryFile:    filepath.Join(memoryDir, "MEMORY.md"),
-		historyFile:   filepath.Join(memoryDir, "HISTORY.md"),
 		internalFile:  filepath.Join(memoryDir, "INTERNAL.md"),
 		heartbeatFile: filepath.Join(memoryDir, "HEARTBEAT.md"),
 		soulFile:      filepath.Join(memoryDir, "SOUL.md"),
@@ -53,8 +63,10 @@ func NewStore(workspace string) (*Store, error) {
 	}
 
 	// Ensure directories exist
-	if err := os.MkdirAll(entitiesDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create memory dirs: %w", err)
+	for _, dir := range []string{entitiesDir, summariesDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create memory dirs: %w", err)
+		}
 	}
 
 	// Scaffold identity files on first run
@@ -111,6 +123,10 @@ The more you know, the better you can help. But remember — you're learning abo
 	writeIfMissing(s.userFile, userContent)
 }
 
+// ---------------------------------------------------------------------------
+// Heartbeat
+// ---------------------------------------------------------------------------
+
 // UpdateHeartbeat writes the current timestamp to HEARTBEAT.md in the workspace root.
 func (s *Store) UpdateHeartbeat() error {
 	s.mu.Lock()
@@ -120,6 +136,10 @@ func (s *Store) UpdateHeartbeat() error {
 	content := fmt.Sprintf("Last active: %s\n", now)
 	return os.WriteFile(s.heartbeatFile, []byte(content), 0644)
 }
+
+// ---------------------------------------------------------------------------
+// Identity context
+// ---------------------------------------------------------------------------
 
 // ReadIdentityContext reads SOUL.md, IDENTITY.md, and USER.md and returns them combined.
 func (s *Store) ReadIdentityContext() string {
@@ -136,6 +156,10 @@ func (s *Store) ReadIdentityContext() string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
+// ---------------------------------------------------------------------------
+// Core long-term memory (MEMORY.md)
+// ---------------------------------------------------------------------------
+
 // ReadLongTerm returns the current core facts and preferences from MEMORY.md.
 func (s *Store) ReadLongTerm() string {
 	s.mu.RLock()
@@ -146,6 +170,18 @@ func (s *Store) ReadLongTerm() string {
 		return ""
 	}
 	return string(data)
+}
+
+// CoreMemorySize returns the current byte size of MEMORY.md.
+func (s *Store) CoreMemorySize() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	info, err := os.Stat(s.memoryFile)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 // WriteLongTerm creates a versioned backup of the current MEMORY.md, then overwrites it.
@@ -211,7 +247,16 @@ func (s *Store) pruneMemoryVersions() {
 	}
 }
 
-// AppendHistory logs an interaction block to the chronological HISTORY.md file.
+// ---------------------------------------------------------------------------
+// Daily log conversation history (replaces monolithic HISTORY.md)
+// ---------------------------------------------------------------------------
+
+// dailyLogPath returns the file path for a given date's conversation log.
+func (s *Store) dailyLogPath(t time.Time) string {
+	return filepath.Join(s.memoryDir, t.Format("2006-01-02")+".md")
+}
+
+// AppendHistory logs an interaction block to today's daily log file.
 func (s *Store) AppendHistory(role, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -219,17 +264,11 @@ func (s *Store) AppendHistory(role, content string) error {
 	// Mark dirty so the heartbeat knows there is new content to consolidate
 	s.dirty.Store(true)
 
-	// Handle history rotation if file gets too large (e.g., > 1MB)
-	if info, err := os.Stat(s.historyFile); err == nil && info.Size() > 1024*1024 {
-		archiveName := fmt.Sprintf("HISTORY_ARCHIVE_%s.md", time.Now().Format("20060102_150405"))
-		archivePath := filepath.Join(s.memoryDir, archiveName)
-		_ = os.Rename(s.historyFile, archivePath)
-	}
-
+	logPath := s.dailyLogPath(time.Now())
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	entry := fmt.Sprintf("[%s] %s: %s\n\n", timestamp, strings.ToUpper(role), content)
 
-	f, err := os.OpenFile(s.historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
@@ -239,12 +278,267 @@ func (s *Store) AppendHistory(role, content string) error {
 	return err
 }
 
+// ReadRecentHistory returns conversation history from today and yesterday's daily logs,
+// capped at maxBytes. If yesterday's log exceeds maxDailyLogBytes, its summary is used instead.
+func (s *Store) ReadRecentHistory(maxBytes int) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	today := now
+	yesterday := now.AddDate(0, 0, -1)
+
+	var parts []string
+	totalLen := 0
+
+	// Load yesterday's content (or its summary if too large)
+	yesterdayContent := s.readDailyLogOrSummary(yesterday)
+	if yesterdayContent != "" {
+		header := fmt.Sprintf("--- %s (yesterday) ---\n%s", yesterday.Format("2006-01-02"), yesterdayContent)
+		if totalLen+len(header) > maxBytes {
+			// Truncate yesterday to fit budget
+			remaining := maxBytes - totalLen
+			if remaining > 200 {
+				header = header[:remaining] + "\n...(truncated)"
+				parts = append(parts, header)
+				totalLen += len(header)
+			}
+		} else {
+			parts = append(parts, header)
+			totalLen += len(header)
+		}
+	}
+
+	// Load today's full content
+	todayContent := s.readDailyLogRaw(today)
+	if todayContent != "" {
+		header := fmt.Sprintf("--- %s (today) ---\n%s", today.Format("2006-01-02"), todayContent)
+		if totalLen+len(header) > maxBytes {
+			// Truncate today, keeping the tail (most recent)
+			remaining := maxBytes - totalLen
+			if remaining > 200 {
+				header = snapToTail(header, remaining)
+				parts = append(parts, header)
+			}
+		} else {
+			parts = append(parts, header)
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// readDailyLogRaw reads the full content of a daily log file.
+// Must be called with s.mu held (at least RLock).
+func (s *Store) readDailyLogRaw(t time.Time) string {
+	data, err := os.ReadFile(s.dailyLogPath(t))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// readDailyLogOrSummary returns the summary for a date if it exists, otherwise the raw log.
+// Must be called with s.mu held (at least RLock).
+func (s *Store) readDailyLogOrSummary(t time.Time) string {
+	// Try summary first
+	summaryPath := filepath.Join(s.summariesDir, t.Format("2006-01-02")+".md")
+	data, err := os.ReadFile(summaryPath)
+	if err == nil && len(data) > 0 {
+		return string(data)
+	}
+
+	// Fall back to raw log
+	return s.readDailyLogRaw(t)
+}
+
+// snapToTail returns the tail portion of s, snapping to the first message boundary.
+func snapToTail(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	tail := s[len(s)-maxBytes:]
+	// Snap to message boundary (lines starting with "[")
+	idx := strings.Index(tail, "\n[")
+	if idx >= 0 && idx < len(tail)-1 {
+		tail = tail[idx+1:]
+	} else {
+		idx = strings.Index(tail, "\n")
+		if idx >= 0 && idx < len(tail)-1 {
+			tail = tail[idx+1:]
+		}
+	}
+	return "...(earlier messages truncated)\n" + tail
+}
+
+// ListDailyLogs returns a list of all daily log dates (YYYY-MM-DD) sorted newest first.
+func (s *Store) ListDailyLogs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := os.ReadDir(s.memoryDir)
+	if err != nil {
+		return nil
+	}
+
+	datePattern := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\.md$`)
+	var dates []string
+	for _, e := range entries {
+		if !e.IsDir() && datePattern.MatchString(e.Name()) {
+			dates = append(dates, strings.TrimSuffix(e.Name(), ".md"))
+		}
+	}
+
+	// Sort newest first
+	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
+	return dates
+}
+
+// SearchHistory searches across all daily logs and archived history for a query string.
+// Returns up to maxSearchResults matching entries with their dates and timestamps.
+func (s *Store) SearchHistory(query string, fromDate, toDate string) []HistorySearchResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	queryLower := strings.ToLower(query)
+	var results []HistorySearchResult
+
+	// Search daily logs
+	entries, err := os.ReadDir(s.memoryDir)
+	if err != nil {
+		return results
+	}
+
+	datePattern := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\.md$`)
+	archivePattern := regexp.MustCompile(`^HISTORY_ARCHIVE_.*\.md$`)
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+
+		var fileDate string
+		isDaily := datePattern.MatchString(name)
+		isArchive := archivePattern.MatchString(name)
+
+		if isDaily {
+			fileDate = strings.TrimSuffix(name, ".md")
+		} else if isArchive {
+			fileDate = "archive"
+		} else {
+			continue
+		}
+
+		// Apply date filters for daily logs
+		if isDaily && fromDate != "" && fileDate < fromDate {
+			continue
+		}
+		if isDaily && toDate != "" && fileDate > toDate {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(s.memoryDir, name))
+		if err != nil {
+			continue
+		}
+
+		// Split by entries (lines starting with "[")
+		content := string(data)
+		entryBlocks := splitHistoryEntries(content)
+
+		for _, block := range entryBlocks {
+			if strings.Contains(strings.ToLower(block), queryLower) {
+				results = append(results, HistorySearchResult{
+					Date:    fileDate,
+					Content: strings.TrimSpace(block),
+				})
+				if len(results) >= maxSearchResults {
+					return results
+				}
+			}
+		}
+	}
+
+	return results
+}
+
+// HistorySearchResult represents a single search match from conversation history.
+type HistorySearchResult struct {
+	Date    string
+	Content string
+}
+
+// splitHistoryEntries splits a history file into individual message entries.
+func splitHistoryEntries(content string) []string {
+	lines := strings.Split(content, "\n")
+	var entries []string
+	var current strings.Builder
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "[") && current.Len() > 0 {
+			entries = append(entries, current.String())
+			current.Reset()
+		}
+		current.WriteString(line)
+		current.WriteString("\n")
+	}
+	if current.Len() > 0 {
+		entries = append(entries, current.String())
+	}
+	return entries
+}
+
+// NeedsSummarization returns true if yesterday's daily log exceeds the summarization threshold
+// and no summary exists yet.
+func (s *Store) NeedsSummarization() (bool, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	yesterday := time.Now().AddDate(0, 0, -1)
+	logPath := s.dailyLogPath(yesterday)
+	summaryPath := filepath.Join(s.summariesDir, yesterday.Format("2006-01-02")+".md")
+
+	// Already summarized?
+	if _, err := os.Stat(summaryPath); err == nil {
+		return false, ""
+	}
+
+	info, err := os.Stat(logPath)
+	if err != nil || info.Size() < maxDailyLogBytes {
+		return false, ""
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return false, ""
+	}
+
+	return true, string(data)
+}
+
+// WriteSummary saves a summarized digest of a daily log.
+func (s *Store) WriteSummary(date, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	summaryPath := filepath.Join(s.summariesDir, date+".md")
+	return os.WriteFile(summaryPath, []byte(content), 0644)
+}
+
+// ---------------------------------------------------------------------------
+// Internal log
+// ---------------------------------------------------------------------------
+
 // AppendInternal logs background operations and reasoning blocks to INTERNAL.md.
 func (s *Store) AppendInternal(role, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Rotate INTERNAL.md if it exceeds the threshold (same logic as HISTORY.md)
+	// Rotate INTERNAL.md if it exceeds the threshold (same logic as before)
 	if info, err := os.Stat(s.internalFile); err == nil && info.Size() > internalRotationBytes {
 		archiveName := fmt.Sprintf("INTERNAL_ARCHIVE_%s.md", time.Now().Format("20060102_150405"))
 		archivePath := filepath.Join(s.memoryDir, archiveName)
@@ -264,34 +558,25 @@ func (s *Store) AppendInternal(role, content string) error {
 	return err
 }
 
-// IsDirtyAndClear atomically checks if new history has been appended since the
-// last consolidation, and clears the flag. Returns true if there was new content.
-func (s *Store) IsDirtyAndClear() bool {
-	return s.dirty.CompareAndSwap(true, false)
-}
-
-// ReadRecentHistory returns the most recent portion of the HISTORY.md file (up to maxBytes).
-// It snaps to message boundaries (lines starting with "[") to avoid returning partial entries.
-func (s *Store) ReadRecentHistory(maxBytes int) string {
+// ReadRecentInternal returns the most recent portion of INTERNAL.md (up to maxInternalReadbackBytes).
+func (s *Store) ReadRecentInternal() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	info, err := os.Stat(s.historyFile)
-	if err != nil {
+	info, err := os.Stat(s.internalFile)
+	if err != nil || info.Size() == 0 {
 		return ""
 	}
 
 	size := info.Size()
-	if size == 0 {
-		return ""
+	readSize := int64(maxInternalReadbackBytes)
+	if size < readSize {
+		readSize = size
 	}
 
-	start := int64(0)
-	if size > int64(maxBytes) {
-		start = size - int64(maxBytes)
-	}
+	start := size - readSize
 
-	f, err := os.Open(s.historyFile)
+	f, err := os.Open(s.internalFile)
 	if err != nil {
 		return ""
 	}
@@ -301,82 +586,164 @@ func (s *Store) ReadRecentHistory(maxBytes int) string {
 		return ""
 	}
 
-	buf := make([]byte, size-start)
+	buf := make([]byte, readSize)
 	if _, err := f.Read(buf); err != nil {
 		return ""
 	}
 
 	str := string(buf)
-	// If we didn't read from the very beginning, snap to the first complete message entry
-	// (lines starting with "[" which is the timestamp delimiter)
+	// Snap to message boundary if we didn't read from the start
 	if start > 0 {
-		// Find the first message boundary: a line starting with "["
 		idx := strings.Index(str, "\n[")
 		if idx >= 0 && idx < len(str)-1 {
 			str = str[idx+1:]
-		} else {
-			// Fallback: snap to the first newline
-			idx = strings.Index(str, "\n")
-			if idx >= 0 && idx < len(str)-1 {
-				str = str[idx+1:]
-			}
 		}
 	}
 
 	return strings.TrimSpace(str)
 }
 
+// IsDirtyAndClear atomically checks if new history has been appended since the
+// last consolidation, and clears the flag. Returns true if there was new content.
+func (s *Store) IsDirtyAndClear() bool {
+	return s.dirty.CompareAndSwap(true, false)
+}
+
+// ---------------------------------------------------------------------------
+// Entity system (with normalized naming and fuzzy lookup)
+// ---------------------------------------------------------------------------
+
+// normalizeEntityName converts an entity name to a canonical lowercase_underscore form.
+func normalizeEntityName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.ToLower(name)
+	// Replace any whitespace or hyphens with underscores
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || r == '-' {
+			return '_'
+		}
+		return r
+	}, name)
+	// Collapse multiple underscores
+	for strings.Contains(name, "__") {
+		name = strings.ReplaceAll(name, "__", "_")
+	}
+	name = strings.Trim(name, "_")
+	return name
+}
+
 // ReadEntity reads specific deeply-contextualized knowledge about a person, project, or topic.
+// Uses fuzzy lookup: tries normalized name, then falls back to exact match.
 func (s *Store) ReadEntity(entityName string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// sanitize entity name for file system
-	safeName := strings.ReplaceAll(entityName, " ", "_") + ".md"
-	data, err := os.ReadFile(filepath.Join(s.entitiesDir, safeName))
+	return s.readEntityUnsafe(entityName)
+}
+
+// readEntityUnsafe reads an entity without acquiring the lock. Must be called with s.mu held.
+func (s *Store) readEntityUnsafe(entityName string) string {
+	// Try normalized name first
+	normalized := normalizeEntityName(entityName)
+	candidates := []string{
+		normalized + ".md",
+		strings.ReplaceAll(entityName, " ", "_") + ".md", // legacy format
+	}
+
+	for _, candidate := range candidates {
+		data, err := os.ReadFile(filepath.Join(s.entitiesDir, candidate))
+		if err == nil {
+			return string(data)
+		}
+	}
+
+	// Fuzzy fallback: scan the directory for case-insensitive match
+	entries, err := os.ReadDir(s.entitiesDir)
 	if err != nil {
 		return ""
 	}
-	return string(data)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		entryNorm := normalizeEntityName(strings.TrimSuffix(e.Name(), ".md"))
+		if entryNorm == normalized {
+			data, err := os.ReadFile(filepath.Join(s.entitiesDir, e.Name()))
+			if err == nil {
+				return string(data)
+			}
+		}
+	}
+
+	return ""
 }
 
 // WriteEntity creates or updates a deeply-contextualized knowledge record.
+// Entity names are normalized to lowercase_underscore format.
 func (s *Store) WriteEntity(entityName, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	safeName := strings.ReplaceAll(entityName, " ", "_") + ".md"
-	return os.WriteFile(filepath.Join(s.entitiesDir, safeName), []byte(content), 0644)
+	normalized := normalizeEntityName(entityName)
+	if normalized == "" {
+		return fmt.Errorf("entity name cannot be empty")
+	}
+
+	// Check for and remove any legacy-named duplicates
+	s.removeLegacyDuplicates(entityName, normalized)
+
+	return os.WriteFile(filepath.Join(s.entitiesDir, normalized+".md"), []byte(content), 0644)
 }
 
-// BuildContext forms the complete context string to inject into the LLM system prompt.
-func (s *Store) BuildContext() string {
-	var builder strings.Builder
-
-	// Identity context (SOUL.md, IDENTITY.md, USER.md)
-	identity := s.ReadIdentityContext()
-	if identity != "" {
-		builder.WriteString(identity)
-		builder.WriteString("\n\n")
+// removeLegacyDuplicates removes old files that map to the same normalized name.
+// Must be called with s.mu held.
+func (s *Store) removeLegacyDuplicates(originalName, normalizedName string) {
+	entries, err := os.ReadDir(s.entitiesDir)
+	if err != nil {
+		return
 	}
 
-	// Long-term core memory (MEMORY.md)
-	longTerm := s.ReadLongTerm()
-	if longTerm != "" {
-		builder.WriteString("## Personal Context & Memory\n\n")
-		builder.WriteString(longTerm)
+	targetFile := normalizedName + ".md"
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		if e.Name() == targetFile {
+			continue // Don't remove the target itself
+		}
+		entryNorm := normalizeEntityName(strings.TrimSuffix(e.Name(), ".md"))
+		if entryNorm == normalizedName {
+			_ = os.Remove(filepath.Join(s.entitiesDir, e.Name()))
+		}
 	}
-
-	result := builder.String()
-	if result == "" {
-		return "No deeply personalized memory found yet."
-	}
-	return result
 }
 
-// FindRelevantEntities scans entity names against the query and returns matching
-// entity contents, capped at maxBytes total. This provides lightweight keyword-based
-// entity auto-surfacing without requiring embeddings or a vector store.
+// ListEntities returns a list of all existing entity names (normalized).
+func (s *Store) ListEntities() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := os.ReadDir(s.entitiesDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read entities directory: %w", err)
+	}
+
+	var entities []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+			name := strings.TrimSuffix(entry.Name(), ".md")
+			entities = append(entities, name)
+		}
+	}
+	return entities, nil
+}
+
+// ---------------------------------------------------------------------------
+// Entity auto-surfacing with trigram similarity
+// ---------------------------------------------------------------------------
+
+// FindRelevantEntities scores each entity against the query using trigram similarity
+// and returns the top matches, capped at maxBytes total.
 func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
 	entities, err := s.ListEntities()
 	if err != nil || len(entities) == 0 {
@@ -384,38 +751,61 @@ func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
 	}
 
 	queryLower := strings.ToLower(query)
-	var parts []string
-	totalLen := 0
+	queryTrigrams := trigrams(queryLower)
 
+	type scored struct {
+		name  string
+		score float64
+	}
+
+	var candidates []scored
 	for _, name := range entities {
-		// Check if any word from the entity name appears in the query
 		nameLower := strings.ToLower(name)
-		words := strings.Fields(nameLower)
-		matched := false
+		nameForMatch := strings.ReplaceAll(nameLower, "_", " ")
+
+		score := trigramSimilarity(queryTrigrams, trigrams(nameForMatch))
+
+		// Boost: exact word match (any word >= 3 chars from entity name appears in query)
+		words := strings.Fields(nameForMatch)
 		for _, word := range words {
 			if len(word) >= 3 && strings.Contains(queryLower, word) {
-				matched = true
+				score += 0.4
 				break
 			}
 		}
-		// Also check if the full entity name (underscore-joined) appears
-		if !matched && strings.Contains(queryLower, strings.ReplaceAll(nameLower, " ", "_")) {
-			matched = true
-		}
-		if !matched {
-			continue
+
+		// Boost: full entity name substring match
+		if strings.Contains(queryLower, nameForMatch) || strings.Contains(queryLower, nameLower) {
+			score += 0.6
 		}
 
-		data := s.ReadEntity(name)
+		if score > 0.15 { // threshold for relevance
+			candidates = append(candidates, scored{name: name, score: score})
+		}
+	}
+
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// Sort by score descending
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	var parts []string
+	totalLen := 0
+
+	for _, c := range candidates {
+		data := s.ReadEntity(c.name)
 		if data == "" {
 			continue
 		}
 
-		entry := fmt.Sprintf("[Entity: %s]\n%s", name, data)
+		entry := fmt.Sprintf("[Entity: %s (relevance: %.0f%%)]\n%s", c.name, c.score*100, data)
 		entryLen := len(entry)
 
 		if totalLen+entryLen > maxBytes {
-			// Truncate this entity to fit the budget
 			remaining := maxBytes - totalLen
 			if remaining > 100 {
 				entry = entry[:remaining] + "\n...(truncated)"
@@ -434,24 +824,73 @@ func (s *Store) FindRelevantEntities(query string, maxBytes int) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// ListEntities returns a list of all existing entity names (without the .md extension).
-func (s *Store) ListEntities() ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// ---------------------------------------------------------------------------
+// Trigram similarity utilities
+// ---------------------------------------------------------------------------
 
-	entries, err := os.ReadDir(s.entitiesDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read entities directory: %w", err)
+// trigrams generates the set of character trigrams from a string.
+func trigrams(s string) map[string]bool {
+	s = "  " + s + "  " // pad for edge trigrams
+	set := make(map[string]bool)
+	runes := []rune(s)
+	for i := 0; i <= len(runes)-3; i++ {
+		tri := string(runes[i : i+3])
+		set[tri] = true
+	}
+	return set
+}
+
+// trigramSimilarity returns the Jaccard similarity between two trigram sets (0.0 - 1.0).
+func trigramSimilarity(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
 	}
 
-	var entities []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
-			name := strings.TrimSuffix(entry.Name(), ".md")
-			// Convert back from snake_case to spaces if needed (best effort)
-			name = strings.ReplaceAll(name, "_", " ")
-			entities = append(entities, name)
+	intersection := 0
+	for k := range a {
+		if b[k] {
+			intersection++
 		}
 	}
-	return entities, nil
+
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+
+	return float64(intersection) / float64(union)
+}
+
+// ---------------------------------------------------------------------------
+// Token estimation utilities
+// ---------------------------------------------------------------------------
+
+// EstimateTokens provides a more nuanced token count estimate.
+// Uses different ratios for different content types.
+func EstimateTokens(s string) int {
+	if len(s) == 0 {
+		return 0
+	}
+
+	// Count code-like characters (backticks, braces, brackets, semicolons)
+	codeChars := 0
+	for _, r := range s {
+		switch r {
+		case '`', '{', '}', '[', ']', ';', '(', ')', '<', '>', '=', '|', '&':
+			codeChars++
+		}
+	}
+
+	totalChars := float64(len(s))
+	codeRatio := float64(codeChars) / totalChars
+
+	// Code-heavy text: ~3.2 chars per token (more tokens per char)
+	// Prose text: ~4.5 chars per token (fewer tokens per char)
+	// Blend based on code ratio
+	charsPerToken := 4.5 - (codeRatio * 1.3) // ranges from 3.2 to 4.5
+
+	// Clamp to reasonable range
+	charsPerToken = math.Max(2.8, math.Min(5.0, charsPerToken))
+
+	return int(math.Ceil(totalChars / charsPerToken))
 }

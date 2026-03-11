@@ -30,11 +30,16 @@ const (
 	entityBudgetTokens   = 800   // auto-surfaced entities
 	cronBudgetTokens     = 400   // cron summaries
 
-	// estimateTokens converts a character count to an approximate token count.
+	// charsPerToken is the default ratio for the simple truncation helper.
+	// The more sophisticated memory.EstimateTokens() is used where precision matters.
 	charsPerToken = 4
 
 	// maxToolResultChars caps the length of a single tool result in the messages array.
 	maxToolResultChars = 3000
+
+	// preCompactionThreshold: when prompt tokens exceed this fraction of the model's
+	// apparent context window, trigger an early memory consolidation.
+	preCompactionThreshold = 0.80
 )
 
 // NanoCore represents the central Agent ReAct Loop.
@@ -54,6 +59,10 @@ type NanoCore struct {
 	chatMu      sync.Mutex
 	lastChatID  string
 	lastChannel string
+
+	// Pre-compaction tracking
+	lastPromptTokens int
+	contextWindowEst int // estimated context window for the model (set on first API response)
 }
 
 // NewNanoCore initializes the main agent brain.
@@ -159,6 +168,14 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 		if resp.Usage.TotalTokens > 0 {
 			log.Printf("📊 Token usage: prompt=%d completion=%d total=%d (iteration %d)",
 				resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, iteration)
+
+			// Track for pre-compaction awareness
+			c.lastPromptTokens = resp.Usage.PromptTokens
+			if c.contextWindowEst == 0 && resp.Usage.PromptTokens > 0 {
+				// Heuristic: estimate context window from first response.
+				// Most models use 128k, but we use a conservative estimate.
+				c.contextWindowEst = estimateContextWindow(c.modelName)
+			}
 		}
 
 		if len(resp.ToolCalls) > 0 {
@@ -256,7 +273,11 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 	builder.WriteString("======================================\n\n")
 	builder.WriteString("You are Littleclaw, an ultra-fast, deeply personalized AI agent.\n")
 	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
-	builder.WriteString("MEMORY: Use `update_core_memory`, `append_core_memory`, `list_entities`, `read_entity`, `write_entity` tools only — never write_file/append_file for memory.\n")
+	builder.WriteString("MEMORY: Use `update_core_memory`, `append_core_memory`, `read_core_memory`, `search_history`, `list_entities`, `read_entity`, `write_entity`, `read_internal_log` tools only — never write_file/append_file for memory.\n")
+	builder.WriteString("MEMORY BEST PRACTICES:\n")
+	builder.WriteString("- Prefer `append_core_memory` for adding new facts. Only use `update_core_memory` when reorganizing/cleaning up.\n")
+	builder.WriteString("- Always `read_core_memory` before `update_core_memory` to avoid losing existing information.\n")
+	builder.WriteString("- Use `search_history` to recall past conversations before guessing.\n")
 	builder.WriteString("WEB: Use `web_search` and `web_fetch` tools for real-time internet access.\n")
 
 	// Workspace structure context
@@ -286,6 +307,14 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 		builder.WriteString("## Personal Context & Memory\n\n")
 		builder.WriteString(coreMemory)
 		builder.WriteString("\n\n")
+
+		// Warn if core memory is approaching budget limits
+		coreSize := c.memoryStore.CoreMemorySize()
+		budgetBytes := int64(coreBudgetTokens * charsPerToken)
+		if coreSize > budgetBytes {
+			builder.WriteString(fmt.Sprintf("⚠️ MEMORY.md (%d bytes) exceeds budget (%d bytes). Consider using `update_core_memory` to reorganize and deduplicate.\n\n",
+				coreSize, budgetBytes))
+		}
 	}
 
 	// Inject cron job run summaries so the agent knows what ran and when
@@ -295,7 +324,7 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 		builder.WriteString(summary)
 	}
 
-	// Auto-surface relevant entities based on user query
+	// Auto-surface relevant entities based on user query (trigram + keyword similarity)
 	if query != "" {
 		entityCtx := c.memoryStore.FindRelevantEntities(query, entityBudgetTokens*charsPerToken)
 		if entityCtx != "" {
@@ -305,7 +334,7 @@ func (c *NanoCore) buildSystemPromptWithQuery(query string) string {
 		}
 	}
 
-	// Inject Short-Term Conversation Context (expanded from 4000 to 16000 bytes)
+	// Inject Short-Term Conversation Context from daily logs
 	recentHistory := c.memoryStore.ReadRecentHistory(historyBudgetBytes)
 	if recentHistory != "" {
 		builder.WriteString("\nRecent Conversational History:\n")
@@ -388,9 +417,43 @@ func (c *NanoCore) sendResponse(chatID string, replyToMessageID int, channel, co
 	})
 }
 
+// IsApproachingContextLimit returns true if the last observed prompt token usage
+// exceeds preCompactionThreshold of the estimated context window.
+func (c *NanoCore) IsApproachingContextLimit() bool {
+	if c.contextWindowEst == 0 || c.lastPromptTokens == 0 {
+		return false
+	}
+	ratio := float64(c.lastPromptTokens) / float64(c.contextWindowEst)
+	return ratio >= preCompactionThreshold
+}
+
+// estimateContextWindow returns a conservative context window estimate for common models.
+func estimateContextWindow(modelName string) int {
+	modelLower := strings.ToLower(modelName)
+	switch {
+	case strings.Contains(modelLower, "gpt-4o"),
+		strings.Contains(modelLower, "gpt-4-turbo"):
+		return 128000
+	case strings.Contains(modelLower, "gpt-4"):
+		return 8192
+	case strings.Contains(modelLower, "gpt-3.5"):
+		return 16385
+	case strings.Contains(modelLower, "claude-3"),
+		strings.Contains(modelLower, "claude-4"):
+		return 200000
+	case strings.Contains(modelLower, "gemini"):
+		return 128000
+	case strings.Contains(modelLower, "llama"),
+		strings.Contains(modelLower, "mixtral"):
+		return 32768
+	default:
+		return 32768 // safe conservative default
+	}
+}
+
 // registerMemoryTools adds tools that interact directly with the memory store
 func (c *NanoCore) registerMemoryTools() {
-	// 1. update_core_memory
+	// 1. update_core_memory -- full overwrite (with backup)
 	c.toolRegistry.RegisterTool(providers.ToolDefinition{
 		Type: "function",
 		Function: struct {
@@ -399,13 +462,13 @@ func (c *NanoCore) registerMemoryTools() {
 			Parameters  map[string]interface{} `json:"parameters"`
 		}{
 			Name:        "update_core_memory",
-			Description: "Updates the long-term core memory profile (MEMORY.md). This permanently overrides the user's profile and preferences.",
+			Description: "Replaces the ENTIRE long-term core memory (MEMORY.md). Creates a backup first. IMPORTANT: Always read_core_memory first to avoid losing existing information. Only use this for reorganizing or deduplicating. For adding new facts, prefer append_core_memory.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"content": map[string]interface{}{
 						"type":        "string",
-						"description": "The full, unstructured textual content representing the user's core memory facts.",
+						"description": "The full content to replace MEMORY.md with. Must include ALL facts you want to keep.",
 					},
 				},
 				"required": []string{"content"},
@@ -420,7 +483,7 @@ func (c *NanoCore) registerMemoryTools() {
 		if err := c.memoryStore.WriteLongTerm(content); err != nil {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error updating core memory: %v", err)}
 		}
-		return &tools.ToolResult{ForLLM: "Successfully updated core memory (MEMORY.md)."}
+		return &tools.ToolResult{ForLLM: "Successfully updated core memory (MEMORY.md). A backup of the previous version was created."}
 	})
 
 	// 1b. append_core_memory — incremental fact addition without full overwrite
@@ -453,10 +516,95 @@ func (c *NanoCore) registerMemoryTools() {
 		if err := c.memoryStore.AppendLongTerm(content); err != nil {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error appending to core memory: %v", err)}
 		}
-		return &tools.ToolResult{ForLLM: "Successfully appended to core memory (MEMORY.md)."}
+
+		// Check if memory is getting large and warn
+		size := c.memoryStore.CoreMemorySize()
+		budgetBytes := int64(coreBudgetTokens * charsPerToken)
+		warning := ""
+		if size > budgetBytes {
+			warning = fmt.Sprintf(" WARNING: MEMORY.md is now %d bytes (budget: %d bytes). Consider using update_core_memory to reorganize and deduplicate.", size, budgetBytes)
+		}
+
+		return &tools.ToolResult{ForLLM: "Successfully appended to core memory (MEMORY.md)." + warning}
 	})
 
-	// 2. read_entity
+	// 1c. read_core_memory — read current core memory before updating
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "read_core_memory",
+			Description: "Reads the current contents of core memory (MEMORY.md). Use this before update_core_memory to ensure you don't lose existing information.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		content := c.memoryStore.ReadLongTerm()
+		if content == "" {
+			return &tools.ToolResult{ForLLM: "Core memory (MEMORY.md) is currently empty."}
+		}
+		size := c.memoryStore.CoreMemorySize()
+		header := fmt.Sprintf("[MEMORY.md — %d bytes]\n\n", size)
+		return &tools.ToolResult{ForLLM: header + content}
+	})
+
+	// 2. search_history — search across daily logs and archives
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "search_history",
+			Description: "Searches conversation history across all daily logs and archives for a query string. Use this to recall past conversations, find what the user said about a topic, or recover context from previous sessions.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "The search term or phrase to find in conversation history.",
+					},
+					"from_date": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional start date filter (YYYY-MM-DD format). Only search logs from this date onward.",
+					},
+					"to_date": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional end date filter (YYYY-MM-DD format). Only search logs up to this date.",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		query, ok := args["query"].(string)
+		if !ok || query == "" {
+			return &tools.ToolResult{ForLLM: "Error: query must be a non-empty string"}
+		}
+
+		fromDate, _ := args["from_date"].(string)
+		toDate, _ := args["to_date"].(string)
+
+		results := c.memoryStore.SearchHistory(query, fromDate, toDate)
+		if len(results) == 0 {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("No matches found for '%s' in conversation history.", query)}
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Found %d match(es) for '%s':\n\n", len(results), query))
+		for i, r := range results {
+			sb.WriteString(fmt.Sprintf("--- Match %d [%s] ---\n%s\n\n", i+1, r.Date, r.Content))
+		}
+		return &tools.ToolResult{ForLLM: sb.String()}
+	})
+
+	// 3. read_entity
 	c.toolRegistry.RegisterTool(providers.ToolDefinition{
 		Type: "function",
 		Function: struct {
@@ -465,13 +613,13 @@ func (c *NanoCore) registerMemoryTools() {
 			Parameters  map[string]interface{} `json:"parameters"`
 		}{
 			Name:        "read_entity",
-			Description: "Reads the deep contextual file for a specific entity (a person, place, project, or topic).",
+			Description: "Reads the deep contextual file for a specific entity (a person, place, project, or topic). Entity names are normalized (case-insensitive, spaces become underscores).",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"entity_name": map[string]interface{}{
 						"type":        "string",
-						"description": "The name of the entity to look up (e.g., 'Alice_Smith', 'Project_Phoenix').",
+						"description": "The name of the entity to look up (e.g., 'Alice Smith', 'project_phoenix').",
 					},
 				},
 				"required": []string{"entity_name"},
@@ -490,7 +638,7 @@ func (c *NanoCore) registerMemoryTools() {
 		return &tools.ToolResult{ForLLM: data}
 	})
 
-	// 3. write_entity
+	// 4. write_entity
 	c.toolRegistry.RegisterTool(providers.ToolDefinition{
 		Type: "function",
 		Function: struct {
@@ -499,7 +647,7 @@ func (c *NanoCore) registerMemoryTools() {
 			Parameters  map[string]interface{} `json:"parameters"`
 		}{
 			Name:        "write_entity",
-			Description: "Creates or updates a deeply-contextualized knowledge record for a specific entity.",
+			Description: "Creates or updates a deeply-contextualized knowledge record for a specific entity. Entity names are automatically normalized (lowercase, underscores).",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -526,6 +674,67 @@ func (c *NanoCore) registerMemoryTools() {
 			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error writing entity: %v", err)}
 		}
 		return &tools.ToolResult{ForLLM: fmt.Sprintf("Successfully saved record for entity: %s", name)}
+	})
+
+	// 5. write_summary -- save a summarized digest of a daily log
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "write_summary",
+			Description: "Saves a summarized digest of a daily conversation log. Used during automatic summarization of large daily logs.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"date": map[string]interface{}{
+						"type":        "string",
+						"description": "The date of the log being summarized (YYYY-MM-DD format).",
+					},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "The summarized digest of that day's conversations.",
+					},
+				},
+				"required": []string{"date", "content"},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		date, okDate := args["date"].(string)
+		content, okContent := args["content"].(string)
+		if !okDate || !okContent {
+			return &tools.ToolResult{ForLLM: "Error: date and content must be strings"}
+		}
+
+		if err := c.memoryStore.WriteSummary(date, content); err != nil {
+			return &tools.ToolResult{ForLLM: fmt.Sprintf("Error writing summary: %v", err)}
+		}
+		return &tools.ToolResult{ForLLM: fmt.Sprintf("Successfully saved summary for %s.", date)}
+	})
+
+	// 6. read_internal_log -- review recent background reasoning and cron outputs
+	c.toolRegistry.RegisterTool(providers.ToolDefinition{
+		Type: "function",
+		Function: struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}{
+			Name:        "read_internal_log",
+			Description: "Reads the most recent entries from the internal operations log (INTERNAL.md). Contains background reasoning, cron job outputs, and consolidation records. Useful for debugging or reviewing what happened in the background.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+		content := c.memoryStore.ReadRecentInternal()
+		if content == "" {
+			return &tools.ToolResult{ForLLM: "Internal log (INTERNAL.md) is empty or does not exist yet."}
+		}
+		return &tools.ToolResult{ForLLM: "[Recent Internal Log]\n\n" + content}
 	})
 }
 

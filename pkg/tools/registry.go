@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"littleclaw/pkg/memory"
@@ -487,8 +488,7 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 		// Safeguard: Prevent LLM from directly touching memory files
 		base := filepath.Base(safePath)
 		dir := filepath.Dir(safePath)
-		if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" ||
-			strings.Contains(dir, "ENTITIES") || base == "ENTITIES" {
+		if isProtectedMemoryPath(base, dir) {
 			return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. Use memory tools instead.")
 		}
 		return safePath, nil
@@ -510,8 +510,8 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 
 	base := filepath.Base(cleanPath)
 	dir := filepath.Dir(cleanPath)
-	if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" || strings.Contains(dir, "ENTITIES") || base == "ENTITIES" {
-		return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. You MUST use 'update_core_memory', 'write_entity', 'list_entities', or 'read_entity' instead.")
+	if isProtectedMemoryPath(base, dir) {
+		return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. You MUST use memory tools (update_core_memory, append_core_memory, read_core_memory, write_entity, list_entities, read_entity, search_history) instead.")
 	}
 
 	return cleanPath, nil
@@ -523,6 +523,43 @@ func isBannedCommand(cmd string) bool {
 		if strings.Contains(cmd, b) {
 			return true
 		}
+	}
+	return false
+}
+
+// dailyLogPattern matches daily log files like "2026-03-11.md"
+var dailyLogPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\.md$`)
+
+// isProtectedMemoryPath returns true if the given file path belongs to a protected memory file.
+// This includes MEMORY.md, daily logs, INTERNAL.md, entity files, and summaries.
+func isProtectedMemoryPath(base, dir string) bool {
+	// Core memory files
+	if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" {
+		return true
+	}
+	// Identity files
+	if base == "SOUL.md" || base == "IDENTITY.md" || base == "USER.md" || base == "HEARTBEAT.md" {
+		return true
+	}
+	// Entity directory
+	if strings.Contains(dir, "ENTITIES") || base == "ENTITIES" {
+		return true
+	}
+	// Daily log files (YYYY-MM-DD.md)
+	if dailyLogPattern.MatchString(base) && strings.HasSuffix(dir, "memory") {
+		return true
+	}
+	// Summary files
+	if strings.Contains(dir, "summaries") {
+		return true
+	}
+	// Memory backup files
+	if strings.HasPrefix(base, "MEMORY_") && strings.HasSuffix(base, ".md") {
+		return true
+	}
+	// History/internal archive files
+	if (strings.HasPrefix(base, "HISTORY_ARCHIVE_") || strings.HasPrefix(base, "INTERNAL_ARCHIVE_")) && strings.HasSuffix(base, ".md") {
+		return true
 	}
 	return false
 }

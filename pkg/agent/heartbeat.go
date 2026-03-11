@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 )
 
 // Heartbeat runs a periodic background loop for the agent to perform
-// autonomous tasks, mainly memory consolidation.
+// autonomous tasks, mainly memory consolidation and summarization.
 type Heartbeat struct {
 	core     *NanoCore
 	interval time.Duration
@@ -29,7 +30,7 @@ func (h *Heartbeat) Start(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Initial check
-	h.triggerConsolidation(ctx)
+	h.tick(ctx)
 
 	for {
 		select {
@@ -37,9 +38,16 @@ func (h *Heartbeat) Start(ctx context.Context) {
 			log.Println("Heartbeat stopping...")
 			return
 		case <-ticker.C:
-			h.triggerConsolidation(ctx)
+			h.tick(ctx)
 		}
 	}
+}
+
+// tick runs all heartbeat tasks: consolidation, summarization, and pre-compaction check.
+func (h *Heartbeat) tick(ctx context.Context) {
+	h.triggerSummarization(ctx)
+	h.triggerConsolidation(ctx)
+	h.checkPreCompaction(ctx)
 }
 
 // triggerConsolidation pushes an internal message to the core to process memory.
@@ -53,19 +61,78 @@ func (h *Heartbeat) triggerConsolidation(ctx context.Context) {
 
 	log.Println("💓 Heartbeat triggered: Initiating memory consolidation...")
 
-	// Create a silent internal message to trigger the agent's memory reasoning.
-	// In a real system you'd probably have a specific internal method for this,
-	// but routing an invisible message is an easy abstraction for now.
 	internalMsg := bus.InboundMessage{
-		Channel:  "internal", // Not telegram, so it shouldn't send back outbound messages
+		Channel:  "internal",
 		SenderID: "system",
 		ChatID:   "internal_memory",
 		Content: `[SYSTEM CONSOLIDATION REQUEST]
 Review the recent conversational history provided in your system prompt.
-Extract any core facts, user preferences, projects, or entity relationships.
-Use the 'update_core_memory' tool to update core facts.
-Use the 'list_entities' and 'write_entity' tools to manage specific entity records.
-You MUST be concise. Do not chat. Only use tools to read and write.`,
+Extract any core facts, user preferences, projects, or entity relationships that should be remembered long-term.
+
+RULES:
+1. Use 'append_core_memory' for NEW facts that aren't already in core memory.
+2. Only use 'update_core_memory' if core memory needs reorganizing or deduplication — and ALWAYS 'read_core_memory' first.
+3. Use 'list_entities' to check existing entities, then 'write_entity' for detailed knowledge about specific people, projects, or topics.
+4. Do NOT duplicate information that already exists in core memory.
+5. Be concise. Do not chat. Only use tools to read and write memory.`,
+	}
+
+	h.core.RunAgentLoop(ctx, internalMsg)
+}
+
+// triggerSummarization checks if yesterday's daily log needs summarization and triggers it.
+func (h *Heartbeat) triggerSummarization(ctx context.Context) {
+	needsSummary, content := h.core.memoryStore.NeedsSummarization()
+	if !needsSummary {
+		return
+	}
+
+	log.Println("📝 Heartbeat: Yesterday's log exceeds threshold, triggering summarization...")
+
+	internalMsg := bus.InboundMessage{
+		Channel:  "internal",
+		SenderID: "system",
+		ChatID:   "internal_memory",
+		Content: fmt.Sprintf(`[SYSTEM SUMMARIZATION REQUEST]
+Yesterday's conversation log is too large to include in full context. Summarize it into a concise digest.
+
+RULES:
+1. Capture the KEY topics discussed, decisions made, and important facts mentioned.
+2. Preserve any action items, promises, or commitments.
+3. Keep entity names and project references intact.
+4. The summary should be 200-500 words maximum.
+5. Write the summary using the write_summary tool.
+6. Do NOT chat. Only produce the summary.
+
+YESTERDAY'S FULL LOG:
+%s`, content),
+	}
+
+	h.core.RunAgentLoop(ctx, internalMsg)
+}
+
+// checkPreCompaction triggers an early consolidation if the agent is approaching context limits.
+func (h *Heartbeat) checkPreCompaction(ctx context.Context) {
+	if !h.core.IsApproachingContextLimit() {
+		return
+	}
+
+	log.Println("⚡ Heartbeat: Context window pressure detected, triggering pre-compaction flush...")
+
+	internalMsg := bus.InboundMessage{
+		Channel:  "internal",
+		SenderID: "system",
+		ChatID:   "internal_memory",
+		Content: `[SYSTEM PRE-COMPACTION FLUSH]
+Context window is filling up. Capture any durable memories to disk NOW before they are lost.
+
+RULES:
+1. Read core memory first with 'read_core_memory'.
+2. Append any new important facts with 'append_core_memory'.
+3. If core memory is bloated or has duplicates, use 'update_core_memory' to reorganize it.
+4. Check entities with 'list_entities' and update any that have new information.
+5. Be aggressive about saving — this may be the last chance before context is trimmed.
+6. Do NOT chat. Only use tools.`,
 	}
 
 	h.core.RunAgentLoop(ctx, internalMsg)
