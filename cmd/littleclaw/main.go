@@ -330,8 +330,9 @@ func main() {
 	}
 
 	// Initialize the Background Heartbeat (Memory Janitor & Cron)
-	// Setting interval to 30 seconds for easy testing. In production, this should be ~30 minutes.
-	hb := agent.NewHeartbeat(nanoCore, 30*time.Second)
+	// 5-minute interval — the dirty-flag check in the heartbeat means it only
+	// actually runs LLM consolidation when new history has been appended.
+	hb := agent.NewHeartbeat(nanoCore, 5*time.Minute)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
