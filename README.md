@@ -16,7 +16,7 @@ Littleclaw is a hyper-personalized, context-aware AI running on a deterministica
 
 ### ✨ Key Features
 
-- **Multi-layered Memory Architecture** — Persistent `MEMORY.md` for core facts, `HISTORY.md` for conversation, `INTERNAL.md` for background reasoning, and per-entity knowledge files. Auto-consolidates context via a background heartbeat.
+- **Multi-layered Memory Architecture** — Persistent `MEMORY.md` for core facts, daily conversation logs (`YYYY-MM-DD.md`) with auto-summarization, `INTERNAL.md` for background reasoning, and per-entity knowledge files with trigram-based auto-surfacing. Auto-consolidates context via a background heartbeat.
 - **Workspace Identity Files** — `SOUL.md`, `IDENTITY.md`, and `USER.md` scaffolded automatically on first boot. The agent reads these on every call, giving it a persistent personality and knowledge of the user across restarts.
 - **Cron with Full Run History** — Schedule recurring tasks with `@every` expressions or cron syntax. Every run is logged to `cron/runs/<jobID>.jsonl` with status (`ok`/`error`), duration, next-run time, and consecutive error count — mirroring how openclaw tracks jobs.
 - **Web Search & Fetch** — Built-in `web_search` (Tavily primary → DuckDuckGo fallback, no key needed) and `web_fetch` (reads any URL) tools for real-time internet access. No `curl` hacks required.
@@ -27,7 +27,7 @@ Littleclaw is a hyper-personalized, context-aware AI running on a deterministica
 ### 🚀 Quick Start
 
 #### Requirements
-- Go 1.21+
+- Go 1.25+
 - [Ollama](https://ollama.ai/) (optional, for local/offline models)
 
 #### Installation
@@ -86,23 +86,31 @@ After first boot, `~/.littleclaw/workspace/` contains:
 
 ```
 workspace/
-├── SOUL.md          # Agent personality & behavioral rules
-├── IDENTITY.md      # Agent name, capabilities, purpose
-├── USER.md          # What the agent knows about you (grows over time)
-├── HEARTBEAT.md     # Last-active timestamp (updated every loop)
-├── CRON.json        # Scheduled jobs with state (lastRun, nextRun, status)
-├── cron/runs/       # Per-job JSONL run logs
+├── SOUL.md            # Agent personality & behavioral rules
+├── IDENTITY.md        # Agent name, capabilities, purpose
+├── USER.md            # What the agent knows about you (grows over time)
+├── HEARTBEAT.md       # Last-active timestamp (updated every loop)
+├── CRON.json          # Scheduled jobs with state (lastRun, nextRun, status)
+├── cron/runs/         # Per-job JSONL run logs
+├── INDEX.json         # Workspace folder index
 ├── memory/
-│   ├── MEMORY.md    # Core long-term facts
-│   ├── HISTORY.md   # Conversation log (auto-rotates at 1 MB)
-│   ├── INTERNAL.md  # Background reasoning log
-│   └── ENTITIES/    # Deep knowledge files per person/project/topic
-└── skills/          # Drop .sh or .py scripts here to add new tools
+│   ├── MEMORY.md      # Core long-term facts (versioned backups kept)
+│   ├── INTERNAL.md    # Background reasoning log (rotates at 1 MB)
+│   ├── YYYY-MM-DD.md  # Daily conversation logs (one per day)
+│   ├── ENTITIES/      # Deep knowledge files per person/project/topic
+│   └── summaries/     # Auto-generated daily summaries (when logs > 8 KB)
+└── skills/            # Drop .sh or .py scripts here to add new tools
 ```
 
 ### 📜 License
 
 [MIT](LICENSE)
+
+### 📖 Documentation
+
+- [AGENTS.md](AGENTS.md) -- How the agent works (for contributors and AI assistants)
+- [ARCHITECTURE.md](ARCHITECTURE.md) -- System architecture and package structure
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- How to build, test, and contribute
 
 ---
 
