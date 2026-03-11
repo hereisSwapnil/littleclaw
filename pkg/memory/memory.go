@@ -24,7 +24,7 @@ const (
 	// maxSearchResults caps how many matches search_history returns.
 	maxSearchResults = 20
 	// maxInternalReadbackBytes caps how much of the internal log is returned by the readback tool.
-	maxInternalReadbackBytes = 8000
+	maxInternalReadbackBytes = 4000
 )
 
 // Store represents the persistent, multi-tier memory system.
@@ -493,31 +493,32 @@ func splitHistoryEntries(content string) []string {
 }
 
 // NeedsSummarization returns true if yesterday's daily log exceeds the summarization threshold
-// and no summary exists yet.
-func (s *Store) NeedsSummarization() (bool, string) {
+// and no summary exists yet. Returns (needsSummary, dateString, logContent).
+func (s *Store) NeedsSummarization() (bool, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	yesterday := time.Now().AddDate(0, 0, -1)
+	dateStr := yesterday.Format("2006-01-02")
 	logPath := s.dailyLogPath(yesterday)
-	summaryPath := filepath.Join(s.summariesDir, yesterday.Format("2006-01-02")+".md")
+	summaryPath := filepath.Join(s.summariesDir, dateStr+".md")
 
 	// Already summarized?
 	if _, err := os.Stat(summaryPath); err == nil {
-		return false, ""
+		return false, "", ""
 	}
 
 	info, err := os.Stat(logPath)
 	if err != nil || info.Size() < maxDailyLogBytes {
-		return false, ""
+		return false, "", ""
 	}
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {
-		return false, ""
+		return false, "", ""
 	}
 
-	return true, string(data)
+	return true, dateStr, string(data)
 }
 
 // WriteSummary saves a summarized digest of a daily log.

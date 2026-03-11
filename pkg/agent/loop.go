@@ -140,7 +140,13 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 	// 3. Log user message to history
 	if msg.Channel == "internal" {
-		c.memoryStore.AppendInternal("SYSTEM", userPrompt)
+		// Truncate large internal messages (e.g. summarization requests with full log dumps)
+		// to avoid bloating INTERNAL.md with content that's already stored elsewhere.
+		internalLogContent := userPrompt
+		if len(internalLogContent) > 1024 {
+			internalLogContent = internalLogContent[:1024] + "\n\n... [truncated for internal log — full content sent to agent] ..."
+		}
+		c.memoryStore.AppendInternal("SYSTEM", internalLogContent)
 	} else {
 		c.memoryStore.AppendHistory("USER", userPrompt)
 	}
@@ -836,9 +842,12 @@ func (c *NanoCore) registerCronTools() {
 			Name:        "remove_cron",
 			Description: "Stop and remove a scheduled cron task by its ID or Label. Use list_cron to see active tasks.",
 			Parameters: map[string]interface{}{
-				"job_id": map[string]interface{}{
-					"type":        "string",
-					"description": "The ID or Label of the cron job to remove.",
+				"type": "object",
+				"properties": map[string]interface{}{
+					"job_id": map[string]interface{}{
+						"type":        "string",
+						"description": "The ID or Label of the cron job to remove.",
+					},
 				},
 				"required": []string{"job_id"},
 			},

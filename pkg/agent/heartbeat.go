@@ -82,30 +82,30 @@ RULES:
 
 // triggerSummarization checks if yesterday's daily log needs summarization and triggers it.
 func (h *Heartbeat) triggerSummarization(ctx context.Context) {
-	needsSummary, content := h.core.memoryStore.NeedsSummarization()
+	needsSummary, date, content := h.core.memoryStore.NeedsSummarization()
 	if !needsSummary {
 		return
 	}
 
-	log.Println("📝 Heartbeat: Yesterday's log exceeds threshold, triggering summarization...")
+	log.Printf("📝 Heartbeat: Yesterday's log (%s) exceeds threshold, triggering summarization...", date)
 
 	internalMsg := bus.InboundMessage{
 		Channel:  "internal",
 		SenderID: "system",
 		ChatID:   "internal_memory",
 		Content: fmt.Sprintf(`[SYSTEM SUMMARIZATION REQUEST]
-Yesterday's conversation log is too large to include in full context. Summarize it into a concise digest.
+The conversation log for %s is too large to include in full context. Summarize it into a concise digest.
 
 RULES:
 1. Capture the KEY topics discussed, decisions made, and important facts mentioned.
 2. Preserve any action items, promises, or commitments.
 3. Keep entity names and project references intact.
 4. The summary should be 200-500 words maximum.
-5. Write the summary using the write_summary tool.
+5. Write the summary using the write_summary tool with date="%s" (IMPORTANT: use this exact date).
 6. Do NOT chat. Only produce the summary.
 
-YESTERDAY'S FULL LOG:
-%s`, content),
+FULL LOG FOR %s:
+%s`, date, date, date, content),
 	}
 
 	h.core.RunAgentLoop(ctx, internalMsg)
