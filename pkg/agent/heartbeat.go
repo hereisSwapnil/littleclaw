@@ -14,6 +14,10 @@ import (
 type Heartbeat struct {
 	core     *NanoCore
 	interval time.Duration
+
+	// Exported fields for external test inspection.
+	Core     *NanoCore
+	Interval time.Duration
 }
 
 // NewHeartbeat creates a new background Heartbeat daemon.
@@ -21,6 +25,8 @@ func NewHeartbeat(core *NanoCore, interval time.Duration) *Heartbeat {
 	return &Heartbeat{
 		core:     core,
 		interval: interval,
+		Core:     core,
+		Interval: interval,
 	}
 }
 
@@ -137,3 +143,17 @@ RULES:
 
 	h.core.RunAgentLoop(ctx, internalMsg)
 }
+
+// Exported wrappers for external test access.
+
+// TriggerConsolidation is the exported equivalent of triggerConsolidation.
+func (h *Heartbeat) TriggerConsolidation(ctx context.Context) { h.triggerConsolidation(ctx) }
+
+// TriggerSummarization is the exported equivalent of triggerSummarization.
+func (h *Heartbeat) TriggerSummarization(ctx context.Context) { h.triggerSummarization(ctx) }
+
+// CheckPreCompaction is the exported equivalent of checkPreCompaction.
+func (h *Heartbeat) CheckPreCompaction(ctx context.Context) { h.checkPreCompaction(ctx) }
+
+// Tick runs one full heartbeat cycle (exported for tests).
+func (h *Heartbeat) Tick(ctx context.Context) { h.tick(ctx) }

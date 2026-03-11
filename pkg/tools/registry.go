@@ -52,12 +52,12 @@ func NewRegistry(workspaceDir string, mem *memory.Store, wsMgr *workspace.Manage
 	r.registerWebTools()
 
 	// Load dynamic skills
-	r.loadSkills()
+	r.LoadSkills()
 
 	return r
 }
 
-func (r *Registry) loadSkills() {
+func (r *Registry) LoadSkills() {
 	skillsDir := filepath.Join(r.workspaceDir, "skills")
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		fmt.Printf("Error creating skills directory: %v\n", err)
@@ -431,7 +431,7 @@ func (r *Registry) registerCoreTools() {
 		}
 
 		// Very basic security boundary. In a real system, you'd want closer inspection.
-		if isBannedCommand(cmdStr) {
+		if IsBannedCommand(cmdStr) {
 			return &ToolResult{ForLLM: "Command blocked by safety guard (dangerous pattern detected)"}
 		}
 
@@ -464,7 +464,7 @@ func (r *Registry) registerCoreTools() {
 			},
 		},
 	}, func(ctx context.Context, args map[string]interface{}) *ToolResult {
-		r.loadSkills()
+		r.LoadSkills()
 		return &ToolResult{
 			ForLLM: "Dynamic skills reloaded successfully.",
 		}
@@ -488,7 +488,7 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 		// Safeguard: Prevent LLM from directly touching memory files
 		base := filepath.Base(safePath)
 		dir := filepath.Dir(safePath)
-		if isProtectedMemoryPath(base, dir) {
+		if IsProtectedMemoryPath(base, dir) {
 			return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. Use memory tools instead.")
 		}
 		return safePath, nil
@@ -510,14 +510,14 @@ func (r *Registry) resolveWorkspacePath(p string) (string, error) {
 
 	base := filepath.Base(cleanPath)
 	dir := filepath.Dir(cleanPath)
-	if isProtectedMemoryPath(base, dir) {
+	if IsProtectedMemoryPath(base, dir) {
 		return "", fmt.Errorf("Error: Direct file access to memory files is prohibited. You MUST use memory tools (update_core_memory, append_core_memory, read_core_memory, write_entity, list_entities, read_entity, search_history) instead.")
 	}
 
 	return cleanPath, nil
 }
 
-func isBannedCommand(cmd string) bool {
+func IsBannedCommand(cmd string) bool {
 	bans := []string{"rm -rf", "mkfs", "dd if="}
 	for _, b := range bans {
 		if strings.Contains(cmd, b) {
@@ -532,7 +532,7 @@ var dailyLogPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\.md$`)
 
 // isProtectedMemoryPath returns true if the given file path belongs to a protected memory file.
 // This includes MEMORY.md, daily logs, INTERNAL.md, entity files, and summaries.
-func isProtectedMemoryPath(base, dir string) bool {
+func IsProtectedMemoryPath(base, dir string) bool {
 	// Core memory files
 	if base == "MEMORY.md" || base == "HISTORY.md" || base == "INTERNAL.md" {
 		return true
