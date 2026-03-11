@@ -11,4 +11,5 @@ require (
 	github.com/manifoldco/promptui v0.9.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	golang.org/x/sys v0.0.0-20181122145206-62eef0e2fa9b // indirect
+	nhooyr.io/websocket v1.8.17 // indirect
 )

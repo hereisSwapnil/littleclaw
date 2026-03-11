@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Littleclaw - Face UI</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/face.css">
+    <link rel="stylesheet" href="css/animations.css">
+    <!-- Fonts now loaded in css/main.css via @import -->
+</head>
+
+<body>
+    <div id="app">
+        <!-- Canvas overlay for particle effects -->
+        <canvas id="particles-canvas"></canvas>
+
+        <!-- Main layout -->
+        <div class="layout">
+            <!-- Left: Face -->
+            <div class="face-panel">
+                <div class="face-container" id="face-container">
+                    <svg id="face-svg" viewBox="0 0 300 320" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <linearGradient id="headGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" stop-color="#1a1a2e" />
+                                <stop offset="100%" stop-color="#0f0f18" />
+                            </linearGradient>
+                            <filter id="innerGlow" x="-10%" y="-10%" width="120%" height="120%">
+                                <feGaussianBlur in="SourceAlpha" stdDeviation="4" result="blur" />
+                                <feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1"
+                                    result="shadowDiff" />
+                                <feFlood flood-color="var(--accent)" flood-opacity="0.3" />
+                                <feComposite in2="shadowDiff" operator="in" />
+                                <feComposite in2="SourceGraphic" operator="over" />
+                            </filter>
+                            <!-- Eye clip paths - slightly larger to avoid eyelid edge artifacts -->
+                            <clipPath id="leftEyeClip">
+                                <ellipse cx="0" cy="0" rx="27" ry="23" />
+                            </clipPath>
+                            <clipPath id="rightEyeClip">
+                                <ellipse cx="0" cy="0" rx="27" ry="23" />
+                            </clipPath>
+                        </defs>
+
+                        <!-- Head outline -->
+                        <rect class="head" x="25" y="15" width="250" height="250" rx="50" ry="50" fill="url(#headGrad)"
+                            stroke="var(--face-stroke)" stroke-width="2.5" filter="url(#innerGlow)" />
+
+                        <!-- Antenna -->
+                        <line class="antenna" x1="150" y1="15" x2="150" y2="-5" stroke="var(--face-stroke)"
+                            stroke-width="2.5" stroke-linecap="round" />
+                        <circle class="antenna-tip" cx="150" cy="-5" r="5" fill="var(--accent)" />
+
+                        <!-- Left Eye -->
+                        <g class="eye left-eye" transform="translate(100, 110)">
+                            <ellipse class="eye-outline" cx="0" cy="0" rx="26" ry="22" fill="var(--eye-bg)"
+                                stroke="var(--face-stroke)" stroke-width="2.5" />
+                            <g clip-path="url(#leftEyeClip)">
+                                <circle class="pupil" cx="0" cy="0" r="11" fill="var(--pupil-color)" />
+                                <circle class="pupil-highlight" cx="5" cy="-5" r="3.5" fill="var(--highlight)"
+                                    opacity="0.85" />
+                                <!-- Eyelid: starts above the eye fully, slides down to cover it -->
+                                <rect class="eyelid" x="-30" y="-60" width="60" height="60" fill="url(#headGrad)" />
+                            </g>
+                        </g>
+
+                        <!-- Right Eye -->
+                        <g class="eye right-eye" transform="translate(200, 110)">
+                            <ellipse class="eye-outline" cx="0" cy="0" rx="26" ry="22" fill="var(--eye-bg)"
+                                stroke="var(--face-stroke)" stroke-width="2.5" />
+                            <g clip-path="url(#rightEyeClip)">
+                                <circle class="pupil" cx="0" cy="0" r="11" fill="var(--pupil-color)" />
+                                <circle class="pupil-highlight" cx="5" cy="-5" r="3.5" fill="var(--highlight)"
+                                    opacity="0.85" />
+                                <rect class="eyelid" x="-30" y="-60" width="60" height="60" fill="url(#headGrad)" />
+                            </g>
+                        </g>
+
+                        <!-- Cheeks (Blush) -->
+                        <ellipse class="cheek left-cheek" cx="65" cy="145" rx="16" ry="8" fill="var(--cheek)" />
+                        <ellipse class="cheek right-cheek" cx="235" cy="145" rx="16" ry="8" fill="var(--cheek)" />
+
+                        <!-- Eyebrows -->
+                        <line class="brow left-brow" x1="74" y1="78" x2="126" y2="75" stroke="var(--face-stroke)"
+                            stroke-width="3.5" stroke-linecap="round" />
+                        <line class="brow right-brow" x1="174" y1="75" x2="226" y2="78" stroke="var(--face-stroke)"
+                            stroke-width="3.5" stroke-linecap="round" />
+
+                        <!-- Mouth -->
+                        <path class="mouth" d="M 110 185 Q 150 215 190 185" fill="none" stroke="var(--face-stroke)"
+                            stroke-width="3" stroke-linecap="round" />
+
+                        <!-- Left Arm + Claw Hand -->
+                        <g class="arm left-arm">
+                            <!-- Arm -->
+                            <path class="arm-body" d="M 28 205 Q 22 230 35 248" fill="none" stroke="var(--face-stroke)"
+                                stroke-width="3" stroke-linecap="round" />
+                            <!-- Hand/palm -->
+                            <circle class="hand-palm" cx="35" cy="252" r="8" fill="var(--face-stroke)" />
+                            <!-- Three little claws/fingers -->
+                            <path class="hand-fingers" d="M 25 248 Q 18 238 20 230" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="2.5" stroke-linecap="round" />
+                            <path class="hand-fingers" d="M 35 256 Q 34 244 36 236" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="2.5" stroke-linecap="round" />
+                            <path class="hand-fingers" d="M 44 250 Q 50 240 48 232" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="2.5" stroke-linecap="round" />
+                        </g>
+
+                        <!-- Right Arm + Claw Hand -->
+                        <g class="arm right-arm">
+                            <!-- Arm -->
+                            <path class="arm-body" d="M 272 205 Q 278 230 265 248" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="3" stroke-linecap="round" />
+                            <!-- Hand/palm -->
+                            <circle class="hand-palm" cx="265" cy="252" r="8" fill="var(--face-stroke)" />
+                            <!-- Three little claws/fingers -->
+                            <path class="hand-fingers" d="M 256 248 Q 250 238 252 230" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="2.5" stroke-linecap="round" />
+                            <path class="hand-fingers" d="M 265 256 Q 266 244 264 236" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="2.5" stroke-linecap="round" />
+                            <path class="hand-fingers" d="M 275 250 Q 282 240 280 232" fill="none"
+                                stroke="var(--face-stroke)" stroke-width="2.5" stroke-linecap="round" />
+                        </g>
+
+                        <!-- Expression indicator dots (thinking) -->
+                        <g class="thinking-dots" opacity="0">
+                            <circle cx="130" cy="165" r="4" fill="var(--accent)" />
+                            <circle cx="150" cy="162" r="4" fill="var(--accent)" />
+                            <circle cx="170" cy="165" r="4" fill="var(--accent)" />
+                        </g>
+
+                        <!-- ZZZ for sleeping -->
+                        <g class="zzz" opacity="0">
+                            <text x="210" y="65" fill="var(--accent)" font-size="20" font-family="var(--font-mono)"
+                                font-weight="600">z</text>
+                            <text x="232" y="48" fill="var(--accent)" font-size="16" font-family="var(--font-mono)"
+                                font-weight="600">z</text>
+                            <text x="248" y="33" fill="var(--accent)" font-size="12" font-family="var(--font-mono)"
+                                font-weight="600">z</text>
+                        </g>
+
+                        <!-- Sweat drop for confused/stressed -->
+                        <g class="sweat-drop" opacity="0">
+                            <path d="M 210 80 Q 218 70 215 85 Q 212 95 208 88 Q 204 80 210 80" fill="#60a5fa"
+                                opacity="0.8" />
+                        </g>
+                    </svg>
+
+                    <!-- Glow ring behind the face -->
+                    <div class="face-glow" id="face-glow"></div>
+                </div>
+
+                <!-- Thought bubble -->
+                <div class="thought-bubble" id="thought-bubble">
+                    <div class="thought-icon" id="thought-icon"></div>
+                    <div class="thought-text" id="thought-text"></div>
+                </div>
+
+                <!-- Expression label -->
+                <div class="expression-label" id="expression-label">idle</div>
+            </div>
+
+            <!-- Right: Panels -->
+            <div class="info-panel">
+                <!-- Status Bar -->
+                <div class="status-bar" id="status-bar">
+                    <div class="status-item">
+                        <span class="status-dot" id="connection-dot"></span>
+                        <span id="connection-status">Connecting...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Uptime</span>
+                        <span class="status-value" id="uptime">0s</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Cron</span>
+                        <span class="status-value" id="cron-count">0</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Entities</span>
+                        <span class="status-value" id="entity-count">0</span>
+                    </div>
+                </div>
+
+                <!-- Activity Timeline -->
+                <div class="timeline-panel">
+                    <h3 class="panel-title">Activity</h3>
+                    <div class="timeline" id="timeline">
+                        <div class="timeline-empty">Waiting for activity...</div>
+                    </div>
+                </div>
+
+                <!-- Last Messages -->
+                <div class="messages-panel">
+                    <h3 class="panel-title">Last Messages</h3>
+                    <div class="message-block">
+                        <div class="message-label">User:</div>
+                        <div class="message-content" id="last-user-msg">-</div>
+                    </div>
+                    <div class="message-block">
+                        <div class="message-label">Littleclaw:</div>
+                        <div class="message-content" id="last-bot-msg">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Title bar -->
+        <div class="title-bar">
+            <span class="title-icon">&#129408;</span>
+            <span class="title-text">LITTLECLAW</span>
+            <span class="title-sub">Face Interface v1.0</span>
+        </div>
+    </div>
+
+    <script src="js/expressions.js"></script>
+    <script src="js/face.js"></script>
+    <script src="js/canvas.js"></script>
+    <script src="js/app.js"></script>
+</body>
+
+</html>

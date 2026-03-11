@@ -19,6 +19,8 @@ type AppConfig struct {
 	TranscriptionBaseURL  string `json:"transcription_baseurl"`
 	TranscriptionModel    string `json:"transcription_model"`
 	TavilyAPIKey          string `json:"tavily_apikey"` // Optional: Tavily Search API key for web_search tool
+	UIEnabled             bool   `json:"ui_enabled"`    // Enable the Face UI web dashboard
+	UIPort                int    `json:"ui_port"`       // Port for the Face UI (default: 3333)
 }
 
 // getConfigPath returns the absolute path to ~/.littleclaw/config.json

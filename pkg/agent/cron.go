@@ -13,6 +13,7 @@ import (
 
 	"littleclaw/pkg/bus"
 	"littleclaw/pkg/memory"
+	"littleclaw/pkg/ui"
 
 	"github.com/robfig/cron/v3"
 )
@@ -43,8 +44,8 @@ type CronJob struct {
 type CronRunRecord struct {
 	Ts          int64  `json:"ts"`
 	JobID       string `json:"jobId"`
-	Action      string `json:"action"`             // always "finished"
-	Status      string `json:"status"`             // "ok" | "error"
+	Action      string `json:"action"` // always "finished"
+	Status      string `json:"status"` // "ok" | "error"
 	DurationMs  int64  `json:"durationMs"`
 	NextRunAtMs int64  `json:"nextRunAtMs,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -61,6 +62,12 @@ type CronService struct {
 	workspaceDir string
 	msgBus       *bus.MessageBus
 	memStore     *memory.Store
+	uiEvents     *ui.EventBus // Optional: emits events for the face UI
+}
+
+// SetUIEventBus attaches a UI event bus to the cron service.
+func (cs *CronService) SetUIEventBus(eb *ui.EventBus) {
+	cs.uiEvents = eb
 }
 
 // NewCronService creates a CronService backed by $workspace/CRON.json.
@@ -190,6 +197,12 @@ func (cs *CronService) runnerFor(job *CronJob) func() {
 			return
 		}
 
+		// Emit UI event for cron firing
+		if cs.uiEvents != nil {
+			cs.uiEvents.Publish(ui.Event{Type: ui.EventCronFired, Data: map[string]interface{}{"label": job.Label, "id": job.ID}})
+			cs.uiEvents.AddActivity(ui.ActivityEntry{Kind: "cron", Title: "Cron: " + job.Label, Detail: "Job fired"})
+		}
+
 		if job.Once {
 			log.Printf("⏰ CronService: firing one-time job %s, removing immediately\n", job.ID)
 			_ = cs.RemoveJob(job.ID)
@@ -247,6 +260,11 @@ func (cs *CronService) runnerFor(job *CronJob) func() {
 
 		// Append run record to per-job JSONL log
 		cs.recordRun(job.ID, runStatus, runErr, durationMs)
+
+		// Emit UI event for cron completion
+		if cs.uiEvents != nil {
+			cs.uiEvents.Publish(ui.Event{Type: ui.EventCronCompleted, Data: map[string]interface{}{"label": job.Label, "id": job.ID, "status": runStatus}})
+		}
 
 		// Send result to the user's Telegram chat
 		if job.ChatID != "" && job.Channel != "" {

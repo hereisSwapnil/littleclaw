@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -15,10 +17,14 @@ import (
 	"littleclaw/pkg/channels/telegram"
 	"littleclaw/pkg/config"
 	"littleclaw/pkg/providers"
+	"littleclaw/pkg/ui"
 
 	"github.com/joho/godotenv"
 	"github.com/manifoldco/promptui"
 )
+
+//go:embed all:web
+var webFS embed.FS
 
 func promptWithDefault(label string, defaultValue string) string {
 	prompt := promptui.Prompt{
@@ -117,6 +123,20 @@ func runConfigure() {
 	fmt.Println("")
 	fmt.Println("--- Web Search (Optional) ---")
 	cfg.TavilyAPIKey = promptWithDefault("Enter Tavily Search API Key (leave blank to skip)", cfg.TavilyAPIKey)
+
+	fmt.Println("")
+	fmt.Println("--- Face UI (Optional) ---")
+	enableUI := selectOption("Enable Face UI Web Dashboard?", []string{"yes", "no"}, "yes")
+	cfg.UIEnabled = enableUI == "yes"
+	if cfg.UIEnabled {
+		portStr := promptWithDefault("Face UI Port", "3333")
+		port := 3333
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err == nil {
+			cfg.UIPort = port
+		} else {
+			cfg.UIPort = 3333
+		}
+	}
 
 	fmt.Println("\n🔍 Testing Provider Connection...")
 
@@ -309,6 +329,45 @@ func main() {
 		log.Fatalf("Failed to initialize Agent Core: %v", err)
 	}
 
+	// Create root context for all background services
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initialize the Face UI if enabled (default: enabled)
+	uiEnabled := true
+	uiPort := 3333
+	if cfg != nil {
+		// UI is enabled by default if not explicitly configured
+		if cfg.UIPort > 0 {
+			uiPort = cfg.UIPort
+		}
+		// Only disable if explicitly set to false in config
+		if cfg.UIPort == 0 && !cfg.UIEnabled {
+			uiEnabled = cfg.UIEnabled
+		}
+	}
+
+	if uiEnabled {
+		eventBus := ui.NewEventBus()
+		stateTracker := ui.NewStateTracker(eventBus)
+
+		// Attach event bus to the agent core (propagates to cron service too)
+		nanoCore.SetUIEventBus(eventBus)
+
+		// Get embedded web filesystem
+		webSubFS, err := fs.Sub(webFS, "web")
+		if err != nil {
+			log.Printf("⚠️ Failed to load Face UI assets: %v", err)
+		} else {
+			uiServer := ui.NewServer(eventBus, stateTracker, uiPort, webSubFS)
+			if err := uiServer.Start(ctx); err != nil {
+				log.Printf("⚠️ Failed to start Face UI server: %v", err)
+			} else {
+				log.Printf("✅ Face UI started on http://localhost:%d", uiPort)
+			}
+		}
+	}
+
 	// Initialize the Telegram Channel
 	tgChannel := telegram.NewChannel(tgToken, allowedUsers, msgBus)
 
@@ -332,9 +391,6 @@ func main() {
 	// Initialize the Background Heartbeat (Memory Janitor & Cron)
 	// Setting interval to 30 seconds for easy testing. In production, this should be ~30 minutes.
 	hb := agent.NewHeartbeat(nanoCore, 30*time.Second)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// 4. Start Background Heartbeat & Cron Service
 	go hb.Start(ctx)

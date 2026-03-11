@@ -1,0 +1,275 @@
+/* =============================================
+   Littleclaw Face - Premium Animations
+   ============================================= */
+
+/* ── Natural eye Blink ── */
+@keyframes blink {
+    0%, 93%, 100% { transform: translateY(0); }
+    96% { transform: translateY(26px); }
+}
+
+.face-idle .left-eye .eyelid,
+.face-idle .right-eye .eyelid {
+    animation: blink 4.5s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+/* ── Slow reflective blink for thinking/remembering ── */
+@keyframes slowBlink {
+    0%, 85%, 100% { transform: translateY(14px); }
+    93% { transform: translateY(26px); }
+}
+
+.face-thinking .left-eye .eyelid,
+.face-thinking .right-eye .eyelid,
+.face-remembering .left-eye .eyelid,
+.face-remembering .right-eye .eyelid {
+    animation: slowBlink 5.5s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+/* ── Speaking mouth animation ── */
+@keyframes speakMouth {
+    0%, 100% { d: path("M 110 185 Q 150 220 190 185"); }
+    20%       { d: path("M 115 188 Q 150 205 185 188"); }
+    40%       { d: path("M 108 182 Q 150 230 192 182"); }
+    60%       { d: path("M 120 190 Q 150 200 180 190"); }
+    80%       { d: path("M 110 185 Q 150 215 190 185"); }
+}
+
+.face-speaking .mouth {
+    animation: speakMouth 0.55s ease-in-out infinite alternate;
+}
+
+/* ── Thinking dots ── */
+@keyframes dotFloat {
+    0%, 100% { transform: translateY(0) scale(1); opacity: 0.6; }
+    50%      { transform: translateY(-9px) scale(1.3); opacity: 1; fill: #e879f9; }
+}
+
+.face-thinking .thinking-dots circle:nth-child(1) { animation: dotFloat 1.5s ease-in-out infinite; }
+.face-thinking .thinking-dots circle:nth-child(2) { animation: dotFloat 1.5s ease-in-out 0.28s infinite; }
+.face-thinking .thinking-dots circle:nth-child(3) { animation: dotFloat 1.5s ease-in-out 0.56s infinite; }
+
+/* ── Idle gentle bob ── */
+@keyframes idleBob {
+    0%, 100% { transform: translateY(0px) rotate(0deg); }
+    40%      { transform: translateY(-5px) rotate(0.4deg); }
+    70%      { transform: translateY(2px) rotate(-0.4deg); }
+}
+
+.face-idle #face-svg {
+    animation: idleBob 6s ease-in-out infinite;
+}
+
+/* ── Idle arm sway ── */
+@keyframes armIdleLeft {
+    0%, 100% { transform: rotate(0deg); }
+    50%      { transform: rotate(-6deg); }
+}
+@keyframes armIdleRight {
+    0%, 100% { transform: rotate(0deg); }
+    50%      { transform: rotate(6deg); }
+}
+
+.face-idle .left-arm  { animation: armIdleLeft 4s ease-in-out infinite; transform-origin: 28px 205px; }
+.face-idle .right-arm { animation: armIdleRight 4s ease-in-out 1s infinite; transform-origin: 272px 205px; }
+
+/* ── Listening - excited alert bounce ── */
+@keyframes listenBop {
+    0%, 100% { transform: translateY(0) scale(1); }
+    30%      { transform: translateY(-4px) scale(1.04); }
+    60%      { transform: translateY(0) scale(0.98); }
+}
+.face-listening #face-svg {
+    animation: listenBop 1.8s ease-in-out infinite;
+}
+
+/* ── Pupil listening pulse ── */
+@keyframes listenPulse {
+    0%, 100% { transform: scale(1); }
+    40%      { transform: scale(1.15); }
+}
+.face-listening .pupil {
+    animation: listenPulse 1.8s ease-in-out infinite;
+}
+
+/* ── Deep sleep breathing ── */
+@keyframes sleepBreathe {
+    0%, 100% { transform: scale(1) translateY(0); }
+    50%      { transform: scale(1.025) translateY(-4px); }
+}
+
+.face-sleeping #face-svg {
+    animation: sleepBreathe 5s ease-in-out infinite;
+}
+
+/* ── ZZZ floating off ── */
+@keyframes zzzFloat {
+    0%   { opacity: 0; transform: translate(0, 0) scale(0.7); }
+    25%  { opacity: 1; transform: translate(6px, -14px) scale(1.0); }
+    65%  { opacity: 0.7; transform: translate(14px, -30px) scale(1.25); }
+    100% { opacity: 0; transform: translate(22px, -46px) scale(1.5); }
+}
+
+.face-sleeping .zzz text:nth-child(1) { animation: zzzFloat 4s ease-in-out infinite; }
+.face-sleeping .zzz text:nth-child(2) { animation: zzzFloat 4s ease-in-out 1.35s infinite; }
+.face-sleeping .zzz text:nth-child(3) { animation: zzzFloat 4s ease-in-out 2.7s infinite; }
+
+/* ── Excited springy bounce ── */
+@keyframes excitedBounce {
+    0%, 100% { transform: translateY(0) scale(1) rotate(0deg); }
+    18%      { transform: translateY(-18px) scale(1.06) rotate(-1deg); }
+    35%      { transform: translateY(0) scale(0.97) rotate(0deg); }
+    55%      { transform: translateY(-9px) scale(1.03) rotate(1deg); }
+    72%      { transform: translateY(0) scale(0.99) rotate(0deg); }
+}
+
+.face-excited #face-svg {
+    animation: excitedBounce 1.4s cubic-bezier(0.25, 1.25, 0.5, 1) infinite;
+}
+
+/* ── Excited arm wave ── */
+@keyframes exciteArmLeft {
+    0%, 100% { transform: translateY(-30px) rotate(30deg); }
+    50%      { transform: translateY(-38px) rotate(40deg); }
+}
+@keyframes exciteArmRight {
+    0%, 100% { transform: translateY(-30px) rotate(-30deg); }
+    50%      { transform: translateY(-38px) rotate(-40deg); }
+}
+
+.face-excited .left-arm  {
+    animation: exciteArmLeft 0.55s ease-in-out infinite;
+    transform-origin: 28px 205px;
+}
+.face-excited .right-arm {
+    animation: exciteArmRight 0.55s ease-in-out 0.15s infinite;
+    transform-origin: 272px 205px;
+}
+
+/* ── Confused tilt and wobble ── */
+@keyframes confusedTilt {
+    0%, 100% { transform: rotate(5deg); }
+    50%      { transform: rotate(8deg) translateY(-2px); }
+}
+
+.face-confused #face-svg {
+    animation: confusedTilt 3s ease-in-out infinite;
+}
+
+/* ── Confused sweat drop drip ── */
+@keyframes sweatDrip {
+    0%   { transform: translateY(-4px); opacity: 0; }
+    20%  { opacity: 1; }
+    80%  { opacity: 0.8; }
+    100% { transform: translateY(12px); opacity: 0; }
+}
+.face-confused .sweat-drop {
+    animation: sweatDrip 2s ease-in-out infinite;
+}
+
+/* ── Searching eye scan ── */
+@keyframes searchScan {
+    0%, 100% { transform: translate(-10px, 0); }
+    25%      { transform: translate(-10px, 0); }
+    50%      { transform: translate(10px, 0); }
+    75%      { transform: translate(10px, -4px); }
+}
+
+.face-searching .left-eye .pupil,
+.face-searching .right-eye .pupil {
+    animation: searchScan 2.8s cubic-bezier(0.68, -0.55, 0.26, 1.55) infinite;
+}
+
+/* ── Consolidating (meditative) zen pulse ── */
+@keyframes consolidatePulse {
+    0%, 100% { filter: drop-shadow(0 0 12px rgba(192, 132, 252, 0.5)); transform: scale(1); }
+    50%      { filter: drop-shadow(0 0 35px rgba(192, 132, 252, 0.9)); transform: scale(1.025); }
+}
+
+.face-consolidating #face-svg {
+    animation: consolidatePulse 3s ease-in-out infinite;
+}
+
+/* ── Consolidating arms float up slowly ── */
+@keyframes zenArmLeft {
+    0%, 100% { transform: translateY(5px) rotate(10deg); }
+    50%      { transform: translateY(0px) rotate(14deg); }
+}
+@keyframes zenArmRight {
+    0%, 100% { transform: translateY(5px) rotate(-10deg); }
+    50%      { transform: translateY(0px) rotate(-14deg); }
+}
+
+.face-consolidating .left-arm  {
+    animation: zenArmLeft 4s ease-in-out infinite;
+    transform-origin: 28px 205px;
+}
+.face-consolidating .right-arm {
+    animation: zenArmRight 4s ease-in-out 1s infinite;
+    transform-origin: 272px 205px;
+}
+
+/* ── Antenna pulse ── */
+@keyframes antennaPulse {
+    0%, 100% { filter: brightness(1); }
+    50%      { filter: brightness(1.8) drop-shadow(0 0 12px currentColor); }
+}
+
+.face-thinking .antenna-tip,
+.face-consolidating .antenna-tip,
+.face-working .antenna-tip,
+.face-listening .antenna-tip {
+    animation: antennaPulse 1.8s ease-in-out infinite;
+}
+
+/* ── Working arm typing ── */
+@keyframes workArmLeft {
+    0%, 100% { transform: translateY(-18px) rotate(-20deg); }
+    50%      { transform: translateY(-8px) rotate(0deg); }
+}
+
+@keyframes workArmRight {
+    0%, 100% { transform: translateY(-18px) rotate(20deg); }
+    50%      { transform: translateY(-8px) rotate(0deg); }
+}
+
+.face-working .left-arm {
+    animation: workArmLeft 0.38s ease-in-out infinite;
+    transform-origin: 28px 205px;
+}
+.face-working .right-arm {
+    animation: workArmRight 0.38s ease-in-out 0.19s infinite;
+    transform-origin: 272px 205px;
+}
+
+/* ── Remembering dreamy sway ── */
+@keyframes remembSway {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50%      { transform: translateY(-3px) rotate(1deg); }
+}
+
+.face-remembering #face-svg {
+    animation: remembSway 5s ease-in-out infinite;
+}
+
+/* ── Timeline entry premium fade in ── */
+@keyframes fadeSlideIn {
+    0%   { opacity: 0; transform: translateY(14px) scale(0.95); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ===================================
+   Mouth paths per expression
+   =================================== */
+.face-idle         .mouth { d: path("M 110 185 Q 150 215 190 185"); }
+.face-thinking     .mouth { d: path("M 128 192 Q 150 188 172 192"); }
+.face-listening    .mouth { d: path("M 122 182 Q 150 198 178 182"); }
+.face-working      .mouth { d: path("M 120 192 Q 150 196 180 192"); }
+.face-searching    .mouth { d: path("M 125 186 Q 150 192 175 186"); }
+.face-remembering  .mouth { d: path("M 115 180 Q 150 218 185 180"); }
+.face-sleeping     .mouth { d: path("M 130 188 Q 150 196 170 188"); }
+/* Huge W-shaped grin for excited */
+.face-excited      .mouth { d: path("M 98 172 Q 150 235 202 172"); }
+/* Wobbly uncertain squiggle for confused */
+.face-confused     .mouth { d: path("M 118 188 Q 134 178 150 190 Q 166 178 182 188"); }
+.face-consolidating .mouth { d: path("M 132 183 Q 150 197 168 183"); }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"littleclaw/pkg/bus"
+	"littleclaw/pkg/ui"
 )
 
 // Heartbeat runs a periodic background loop for the agent to perform
@@ -45,9 +46,14 @@ func (h *Heartbeat) Start(ctx context.Context) {
 // triggerConsolidation pushes an internal message to the core to process memory.
 func (h *Heartbeat) triggerConsolidation(ctx context.Context) {
 	log.Println("💓 Heartbeat triggered: Initiating memory consolidation...")
-	
+
+	// Emit UI events
+	h.core.emitUI(ui.EventHeartbeat, nil)
+	h.core.emitUI(ui.EventConsolidation, nil)
+	h.core.emitActivity("heartbeat", "Heartbeat", "Memory consolidation triggered")
+
 	// Create a silent internal message to trigger the agent's memory reasoning.
-	// In a real system you'd probably have a specific internal method for this, 
+	// In a real system you'd probably have a specific internal method for this,
 	// but routing an invisible message is an easy abstraction for now.
 	internalMsg := bus.InboundMessage{
 		Channel:  "internal", // Not telegram, so it shouldn't send back outbound messages
@@ -60,6 +66,6 @@ Use the 'update_core_memory' tool to update core facts.
 Use the 'list_entities' and 'write_entity' tools to manage specific entity records.
 You MUST be concise. Do not chat. Only use tools to read and write.`,
 	}
-	
+
 	h.core.RunAgentLoop(ctx, internalMsg)
 }

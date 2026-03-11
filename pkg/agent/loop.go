@@ -12,6 +12,7 @@ import (
 	"littleclaw/pkg/memory"
 	"littleclaw/pkg/providers"
 	"littleclaw/pkg/tools"
+	"littleclaw/pkg/ui"
 	"littleclaw/pkg/workspace"
 )
 
@@ -36,6 +37,49 @@ type NanoCore struct {
 	lastChatID   string
 	lastChannel  string
 	tavilyAPIKey string
+	uiEvents     *ui.EventBus // Optional: emits events for the face UI
+}
+
+// SetUIEventBus attaches an event bus for the face UI.
+func (c *NanoCore) SetUIEventBus(eb *ui.EventBus) {
+	c.uiEvents = eb
+	// Propagate to cron service
+	if c.cronService != nil {
+		c.cronService.SetUIEventBus(eb)
+	}
+}
+
+// emitUI publishes a UI event if the event bus is attached.
+func (c *NanoCore) emitUI(evtType ui.EventType, data interface{}) {
+	if c.uiEvents == nil {
+		return
+	}
+	c.uiEvents.Publish(ui.Event{
+		Type: evtType,
+		Data: data,
+	})
+}
+
+// emitActivity logs an activity entry to the UI event bus.
+func (c *NanoCore) emitActivity(kind, title, detail string) {
+	if c.uiEvents == nil {
+		return
+	}
+	c.uiEvents.AddActivity(ui.ActivityEntry{
+		Kind:   kind,
+		Title:  title,
+		Detail: detail,
+	})
+}
+
+// GetCronService returns the cron service for external access (e.g. UI stats).
+func (c *NanoCore) GetCronService() *CronService {
+	return c.cronService
+}
+
+// GetMemoryStore returns the memory store for external access (e.g. UI stats).
+func (c *NanoCore) GetMemoryStore() *memory.Store {
+	return c.memoryStore
 }
 
 // NewNanoCore initializes the main agent brain.
@@ -104,6 +148,13 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 		userPrompt = fmt.Sprintf("Context (User is replying to this previous message):\n\"%s\"\n\nUser's message: %s", msg.ReplyTo, msg.Content)
 	}
 
+	// Emit UI events for incoming message
+	if msg.Channel != "internal" {
+		c.emitUI(ui.EventMessageIn, map[string]interface{}{"message": userPrompt, "sender": msg.SenderID})
+		c.emitActivity("message_in", "User Message", truncateStr(userPrompt, 100))
+	}
+	c.emitUI(ui.EventThinkingStart, map[string]interface{}{"message": userPrompt})
+
 	messages := []providers.Message{
 		{Role: "system", Content: sysPrompt},
 		{Role: "user", Content: userPrompt}, // Omit media for brevity in this foundational version
@@ -154,8 +205,15 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 				var args map[string]interface{}
 				_ = json.Unmarshal([]byte(argsStr), &args)
 
+				// Emit UI event for tool call
+				c.emitUI(ui.EventToolCall, map[string]interface{}{"tool": toolName, "args": argsStr})
+				c.emitActivity("tool_call", toolName, truncateStr(argsStr, 120))
+
 				// Execute securely
 				result := c.toolRegistry.Execute(ctx, toolName, args)
+
+				// Emit UI event for tool result
+				c.emitUI(ui.EventToolResult, map[string]interface{}{"tool": toolName, "result": truncateStr(result.ForLLM, 200)})
 
 				// Append tool result to messages
 				messages = append(messages, providers.Message{
@@ -199,6 +257,8 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 
 		// If no tools, it's a final response
 		if resp.Content != "" {
+			c.emitUI(ui.EventResponseReady, map[string]interface{}{"message": resp.Content})
+			c.emitActivity("message_out", "Bot Response", truncateStr(resp.Content, 120))
 			c.sendResponse(msg.ChatID, msg.MessageID, msg.Channel, resp.Content, nil)
 			if msg.Channel == "internal" {
 				c.memoryStore.AppendInternal("ASSISTANT", resp.Content)
@@ -208,6 +268,9 @@ func (c *NanoCore) RunAgentLoop(ctx context.Context, msg bus.InboundMessage) {
 		}
 		break
 	}
+
+	// Emit thinking end
+	c.emitUI(ui.EventThinkingEnd, nil)
 
 	if iteration >= maxIterations {
 		log.Printf("agent loop hit max iterations (%d) for chat %s", maxIterations, msg.ChatID)
@@ -609,4 +672,12 @@ func (c *NanoCore) registerCronTools() {
 		}
 		return &tools.ToolResult{ForLLM: sb.String()}
 	})
+}
+
+// truncateStr shortens a string to maxLen, appending "..." if truncated.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
