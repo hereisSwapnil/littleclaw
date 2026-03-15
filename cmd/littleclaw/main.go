@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"os/exec" // Added for runStop function
+	"strings" // Added for runStop function
 	"path/filepath"
 	"syscall"
 	"time"
@@ -194,50 +196,84 @@ func runStop() {
 		log.Fatalf("Cannot get home dir: %v", err)
 	}
 	pidFile := filepath.Join(home, ".littleclaw", "littleclaw.pid")
+	stoppedProcesses := 0
 
+	// --- Attempt 1: Stop using PID file ---
 	pidBytes, err := os.ReadFile(pidFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("Littleclaw is not running (PID file not found).")
-			return
+	if err == nil {
+		pid, err := strconv.Atoi(string(pidBytes))
+		if err == nil {
+			process, err := os.FindProcess(pid)
+			if err == nil {
+				if err = process.Signal(syscall.SIGTERM); err == nil {
+					fmt.Printf("Sent SIGTERM to Littleclaw process (from PID file) with PID %d.\n", pid)
+					time.Sleep(2 * time.Second)
+					if err := process.Signal(syscall.Signal(0)); err != nil {
+						fmt.Println("Littleclaw process (from PID file) stopped successfully.")
+						stoppedProcesses++
+					} else {
+						fmt.Printf("Littleclaw process (from PID file) with PID %d might still be running. You may need to terminate it manually.\n", pid)
+					}
+				}
+			}
 		}
-		log.Fatalf("Failed to read PID file: %v", err)
 	}
+	// Always try to remove PID file if it exists, as it might be stale.
+	os.Remove(pidFile)
 
-	pid, err := strconv.Atoi(string(pidBytes))
-	if err != nil {
-		log.Fatalf("Failed to parse PID from file: %v", err)
-	}
-
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Printf("Failed to find process with PID %d: %v\n", pid, err)
-		// Even if os.FindProcess fails, try to remove PID file if process clearly not running.
-		os.Remove(pidFile)
-		return
-	}
-
-	// Send SIGTERM to the process
-	err = process.Signal(syscall.SIGTERM)
-	if err != nil {
-		fmt.Printf("Failed to send SIGTERM to process %d: %v\n", pid, err)
-		os.Remove(pidFile) // Attempt to clean up PID file even if signal fails
-		return
-	}
-
-	fmt.Printf("Sent SIGTERM to Littleclaw process with PID %d.\n", pid)
-
-	// Wait a bit for the process to terminate
-	time.Sleep(2 * time.Second)
-
-	// Check if the process is still running more reliably
-	// Sending signal 0 checks for existence without killing
-	if err := process.Signal(syscall.Signal(0)); err != nil {
-		// Process is gone
-		fmt.Println("Littleclaw process stopped successfully.")
-		os.Remove(pidFile) // Clean up PID file after successful stop
+	// --- Attempt 2: Search for 'go run' processes (from go-build cache) ---
+	if stoppedProcesses == 0 {
+		fmt.Println("No Littleclaw process stopped via PID file. Searching for 'go run' instances...")
 	} else {
-		fmt.Println("Littleclaw process might still be running. You may need to terminate it manually.")
+		fmt.Println("Continuing search for additional 'go run' instances...")
+	}
+
+	cmd := exec.Command("ps", "aux")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Failed to run 'ps aux': %v", err)
+		if stoppedProcesses == 0 {
+			fmt.Println("Could not find any running Littleclaw processes.")
+		} else {
+			fmt.Println("No additional Littleclaw processes found.")
+		}
+		return
+	}
+
+	lines := strings.Split(string(output), "\n")
+	currentUser := os.Getenv("USER")
+	for _, line := range lines {
+		// Look for 'go-build' in the path, '/main' for the executable, current user, and exclude the grep command itself
+		if strings.Contains(line, "go-build") && strings.Contains(line, "/main") && strings.Contains(line, currentUser) && !strings.Contains(line, "grep") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
+				pidStr := fields[1]
+				pid, err := strconv.Atoi(pidStr)
+				if err == nil {
+					// Found a potential 'go run' instance
+					fmt.Printf("Found potential Littleclaw process from 'go run' cache: PID %d\n", pid)
+					process, err := os.FindProcess(pid)
+					if err == nil {
+						if err = process.Signal(syscall.SIGTERM); err == nil {
+							fmt.Printf("Sent SIGTERM to Littleclaw process with PID %d.\n", pid)
+							time.Sleep(2 * time.Second) // Give time to terminate
+							if err := process.Signal(syscall.Signal(0)); err != nil {
+								fmt.Println("Littleclaw process stopped successfully.")
+								stoppedProcesses++
+							} else {
+								fmt.Printf("Littleclaw process with PID %d might still be running. You may need to terminate it manually.\n", pid)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if stoppedProcesses == 0 {
+		fmt.Println("No active Littleclaw processes found after exhaustive search.")
+	} else {
+		fmt.Printf("Successfully stopped %d Littleclaw process(es).\n", stoppedProcesses)
 	}
 }
 
