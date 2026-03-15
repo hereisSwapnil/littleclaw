@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"strconv" // Added for runStop function
 
 	"littleclaw/pkg/agent"
 	"littleclaw/pkg/bus"
@@ -187,6 +188,59 @@ func runReset() {
 	fmt.Println("✅ Littleclaw workspace has been successfully reset!")
 }
 
+func runStop() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Cannot get home dir: %v", err)
+	}
+	pidFile := filepath.Join(home, ".littleclaw", "littleclaw.pid")
+
+	pidBytes, err := os.ReadFile(pidFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("Littleclaw is not running (PID file not found).")
+			return
+		}
+		log.Fatalf("Failed to read PID file: %v", err)
+	}
+
+	pid, err := strconv.Atoi(string(pidBytes))
+	if err != nil {
+		log.Fatalf("Failed to parse PID from file: %v", err)
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Printf("Failed to find process with PID %d: %v\n", pid, err)
+		// Even if os.FindProcess fails, try to remove PID file if process clearly not running.
+		os.Remove(pidFile)
+		return
+	}
+
+	// Send SIGTERM to the process
+	err = process.Signal(syscall.SIGTERM)
+	if err != nil {
+		fmt.Printf("Failed to send SIGTERM to process %d: %v\n", pid, err)
+		os.Remove(pidFile) // Attempt to clean up PID file even if signal fails
+		return
+	}
+
+	fmt.Printf("Sent SIGTERM to Littleclaw process with PID %d.\n", pid)
+
+	// Wait a bit for the process to terminate
+	time.Sleep(2 * time.Second)
+
+	// Check if the process is still running more reliably
+	// Sending signal 0 checks for existence without killing
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		// Process is gone
+		fmt.Println("Littleclaw process stopped successfully.")
+		os.Remove(pidFile) // Clean up PID file after successful stop
+	} else {
+		fmt.Println("Littleclaw process might still be running. You may need to terminate it manually.")
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		if os.Args[1] == "configure" {
@@ -194,6 +248,9 @@ func main() {
 			return
 		} else if os.Args[1] == "reset" {
 			runReset()
+			return
+		} else if os.Args[1] == "stop" { // Added stop command
+			runStop()
 			return
 		}
 	}
@@ -219,6 +276,14 @@ func main() {
 		log.Fatalf("Cannot get home dir: %v", err)
 	}
 	workspace := filepath.Join(home, ".littleclaw", "workspace")
+
+	// Create PID file
+	pidFile := filepath.Join(home, ".littleclaw", "littleclaw.pid")
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+		log.Fatalf("Failed to write PID file: %v", err)
+	}
+	defer os.Remove(pidFile) // Ensure PID file is removed on exit
+
 
 	// 2. Load Configuration
 	var tgToken, tgAllowedUser, providerType, modelName, providerAPIKey string
