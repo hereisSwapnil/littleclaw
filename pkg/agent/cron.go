@@ -35,6 +35,7 @@ type CronJob struct {
 	ChatID   string       `json:"chat_id"`  // Telegram chat ID to reply to
 	Channel  string       `json:"channel"`  // channel to respond on (e.g. "telegram")
 	Label    string       `json:"label"`    // human-readable label shown to user
+	Silent   bool         `json:"silent"`   // if true, output is logged internally but not sent to user
 	Once     bool         `json:"once"`     // if true, job is removed after one execution
 	State    CronJobState `json:"state"`
 }
@@ -248,8 +249,8 @@ func (cs *CronService) runnerFor(job *CronJob) func() {
 		// Append run record to per-job JSONL log
 		cs.RecordRun(job.ID, runStatus, runErr, durationMs)
 
-		// Send result to the user's Telegram chat
-		if job.ChatID != "" && job.Channel != "" {
+		// Send result to the user's Telegram chat if not silent
+		if !job.Silent && job.ChatID != "" && job.Channel != "" {
 			cs.msgBus.SendOutbound(bus.OutboundMessage{
 				Channel: job.Channel,
 				ChatID:  job.ChatID,

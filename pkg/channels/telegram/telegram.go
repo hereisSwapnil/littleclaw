@@ -20,14 +20,14 @@ import (
 
 // Channel represents the Telegram integration
 type Channel struct {
-	bot       *tgbotapi.BotAPI
-	bus       *bus.MessageBus
-	token     string
-	allowFrom map[string]bool // Set of allowed user IDs
+	bot                  *tgbotapi.BotAPI
+	bus                  *bus.MessageBus
+	token                string
+	allowFrom            map[string]bool // Set of allowed user IDs
+	transcriptionOptions providers.TranscriptionProvider
 
 	typingMu      sync.Mutex
-	typingCancels        map[int]context.CancelFunc
-	transcriptionOptions providers.TranscriptionProvider
+	typingCancels map[int]context.CancelFunc
 }
 
 // NewChannel creates a new Telegram channel
@@ -43,7 +43,6 @@ func NewChannel(token string, allowedUsers []string, messageBus *bus.MessageBus)
 		typingCancels: make(map[int]context.CancelFunc),
 	}
 }
-
 
 // SetTranscriptionProvider attaches a transcription engine to the channel
 func (t *Channel) SetTranscriptionProvider(p providers.TranscriptionProvider) {
@@ -235,14 +234,17 @@ func (t *Channel) SendMessage(ctx context.Context, chatID string, replyToMessage
 		return fmt.Errorf("invalid chat ID: %w", err)
 	}
 
-	t.typingMu.Lock()
-	if cancel, exists := t.typingCancels[replyToMessageID]; exists {
-		cancel()
-		delete(t.typingCancels, replyToMessageID)
-		// Remove reaction
-		go t.setReaction(chatID, replyToMessageID, "")
+	// Stop typing and remove reaction only if this is a reply to a specific message
+	if replyToMessageID != 0 {
+		t.typingMu.Lock()
+		if cancel, exists := t.typingCancels[replyToMessageID]; exists {
+			cancel()
+			delete(t.typingCancels, replyToMessageID)
+			// Remove reaction
+			go t.setReaction(chatID, replyToMessageID, "")
+		}
+		t.typingMu.Unlock()
 	}
-	t.typingMu.Unlock()
 
 	// 1. Send all attached files
 	for _, file := range files {

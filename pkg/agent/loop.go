@@ -280,7 +280,9 @@ func (c *NanoCore) BuildSystemPromptWithQuery(query string) string {
 	builder.WriteString("ALWAYS write in plain text. Emoji are fine. Backticks for inline code are fine.\n")
 	builder.WriteString("======================================\n\n")
 	builder.WriteString("You are Littleclaw, an ultra-fast, deeply personalized AI agent.\n")
-	builder.WriteString("You have access to local file execution and scripts. Be concise, direct, and brilliant.\n")
+	builder.WriteString("TONE: Use extremely simple, direct language. No fluff, no formal greetings. Be brief.\n")
+	builder.WriteString("CONFIRMATION: ALWAYS ask for confirmation or clarify intent before taking irreversible actions (like deleting files, clearing memory, or running complex scripts) unless the user explicitly gave a direct command.\n")
+	builder.WriteString("If a task is ambiguous, ASK a simple question instead of guessing.\n")
 	builder.WriteString("MEMORY: Use `update_core_memory`, `append_core_memory`, `read_core_memory`, `search_history`, `list_entities`, `read_entity`, `write_entity`, `read_internal_log` tools only — never write_file/append_file for memory.\n")
 	builder.WriteString("MEMORY BEST PRACTICES:\n")
 	builder.WriteString("- Prefer `append_core_memory` for adding new facts. Only use `update_core_memory` when reorganizing/cleaning up.\n")
@@ -784,6 +786,10 @@ func (c *NanoCore) registerCronTools() {
 						"type":        "boolean",
 						"description": "Set to true if this task should only run once and then be removed. Useful for one-time reminders.",
 					},
+					"silent": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Set to true if the output should only be logged internally and NOT sent to the user. Use this for background maintenance or quiet monitoring.",
+					},
 				},
 				"required": []string{"label", "schedule", "command"},
 			},
@@ -793,6 +799,7 @@ func (c *NanoCore) registerCronTools() {
 		schedule, _ := args["schedule"].(string)
 		command, _ := args["command"].(string)
 		once, _ := args["once"].(bool)
+		silent, _ := args["silent"].(bool)
 
 		if label == "" || schedule == "" || command == "" {
 			return &tools.ToolResult{ForLLM: "Error: label, schedule, and command are all required."}
@@ -822,6 +829,7 @@ func (c *NanoCore) registerCronTools() {
 			ChatID:   chatID,
 			Channel:  channel,
 			Once:     once,
+			Silent:   silent,
 		}
 
 		if err := c.cronService.AddJob(job); err != nil {
